@@ -1,0 +1,18 @@
+{
+  "name": "volunteer-tracker-server",
+  "version": "1.0.0",
+  "description": "Backend API for the volunteer event tracker",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
