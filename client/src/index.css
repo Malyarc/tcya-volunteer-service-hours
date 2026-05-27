@@ -17,11 +17,11 @@ body {
     Roboto, sans-serif;
   background: radial-gradient(
       ellipse at top left,
-      #e8f8f0 0%,
-      transparent 50%
+      #e6eef9 0%,
+      transparent 55%
     ),
-    radial-gradient(ellipse at bottom right, #e0f2ec 0%, transparent 50%),
-    #f7fafc;
+    radial-gradient(ellipse at bottom right, #eaf1fa 0%, transparent 50%),
+    #f6f8fc;
   color: #0f172a;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

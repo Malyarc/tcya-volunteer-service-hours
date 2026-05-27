@@ -1,11 +1,20 @@
-# Volunteer Hours Tracker
+# ELA TCYA Volunteer Service Hours
 
-A simple, modern web app for logging volunteer event sign-in / sign-out times
-and tracking cumulative service hours.
+A modern web app for the **East Los Angeles Tzu Chi Youth Association** to log
+volunteer event sign-in / sign-out times and track cumulative service hours.
 
 - **Frontend**: React + TypeScript + Vite + Tailwind CSS
 - **Backend**: Node.js + Express (JSON file storage)
 - **Target host**: AWS EC2 t2.micro / t3.micro (Ubuntu)
+- **Branding**: Tzu Chi-inspired navy palette (`brand-700` ≈ deep "blue sky" navy)
+  with warm gold accents.
+
+> **Note on the logo**: the lotus mark in the header is a generic stylized
+> lotus drawn from scratch — it is intentionally distinct from the Tzu Chi
+> Foundation's registered 8-petal-with-ship trademark. If your chapter has
+> rights to use the official logo, replace the SVG in `client/public/favicon.svg`
+> and the `LotusMark` component in `client/src/components/Header.tsx` (or drop
+> in an `<img src="/logo.png" />`).
 
 ## Features
 

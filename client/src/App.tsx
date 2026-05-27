@@ -104,8 +104,8 @@ export default function App() {
 
         <ExportButton summaries={summaries} />
 
-        <footer className="mt-4 text-center text-xs text-slate-400">
-          Built for community service · Data lives on the host server.
+        <footer className="mt-4 text-center text-xs text-slate-500">
+          ELA TCYA Volunteer Service Hours · Built with great love 大愛
         </footer>
       </main>
 
