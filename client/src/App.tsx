@@ -4,23 +4,45 @@ import { VolunteerTable } from "./components/VolunteerTable";
 import { SubmissionForm } from "./components/SubmissionForm";
 import { ExportButton } from "./components/ExportButton";
 import { Toast } from "./components/Toast";
-import { fetchSubmissions } from "./api";
-import type { Submission } from "./types";
+import { AdminLoginModal } from "./components/AdminLoginModal";
+import { EventsPanel } from "./components/admin/EventsPanel";
+import { CreateEventModal } from "./components/admin/CreateEventModal";
+import { EventDetailPage } from "./components/admin/EventDetailPage";
+import {
+  checkAdminSession,
+  fetchEvents,
+  fetchSubmissions,
+} from "./api";
+import { clearAdminToken, isAdminLoggedIn } from "./auth";
+import type { Submission, VolunteerEvent } from "./types";
 import { VOLUNTEERS } from "./data/volunteers";
-import { buildSummaries } from "./utils";
+import { buildSummaries, isCountableSubmission } from "./utils";
+
+type View = { kind: "home" } | { kind: "event"; eventId: string };
 
 export default function App() {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [events, setEvents] = useState<VolunteerEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [formOpen, setFormOpen] = useState(false);
+
+  const [isAdmin, setIsAdmin] = useState<boolean>(() => isAdminLoggedIn());
+  const [view, setView] = useState<View>({ kind: "home" });
+
+  const [adminLoginOpen, setAdminLoginOpen] = useState(false);
+  const [submissionFormOpen, setSubmissionFormOpen] = useState(false);
+  const [createEventOpen, setCreateEventOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const data = await fetchSubmissions();
-      setSubmissions(data);
+      const [subs, evs] = await Promise.all([
+        fetchSubmissions(),
+        fetchEvents(),
+      ]);
+      setSubmissions(subs);
+      setEvents(evs);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data.");
     } finally {
@@ -32,8 +54,25 @@ export default function App() {
     refresh();
   }, [refresh]);
 
-  // Re-fetch when the tab becomes visible so users always see the latest
-  // submissions even when other people have filled the form on another device.
+  // Validate the stored admin token on first load — clears stale tokens after
+  // server restarts or password changes.
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    (async () => {
+      const ok = await checkAdminSession();
+      if (cancelled) return;
+      if (!ok) {
+        clearAdminToken();
+        setIsAdmin(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin]);
+
+  // Re-fetch when the tab becomes visible so users always see fresh data.
   useEffect(() => {
     function onVisible() {
       if (document.visibilityState === "visible") refresh();
@@ -43,24 +82,44 @@ export default function App() {
   }, [refresh]);
 
   const summaries = useMemo(
-    () => buildSummaries(VOLUNTEERS, submissions),
-    [submissions]
+    () => buildSummaries(VOLUNTEERS, submissions, events),
+    [submissions, events]
   );
 
   const totals = useMemo(() => {
     const totalHours =
-      Math.round(
-        summaries.reduce((a, s) => a + s.totalHours, 0) * 10
-      ) / 10;
+      Math.round(summaries.reduce((a, s) => a + s.totalHours, 0) * 10) / 10;
+    const countedSubmissions = submissions.filter((s) =>
+      isCountableSubmission(s, events)
+    ).length;
     const activeVolunteers = summaries.filter(
       (s) => s.submissions.length > 0
     ).length;
     return {
       totalHours,
-      totalSubmissions: submissions.length,
+      totalSubmissions: countedSubmissions,
       activeVolunteers,
     };
-  }, [summaries, submissions.length]);
+  }, [summaries, submissions, events]);
+
+  const currentEvent = useMemo(() => {
+    if (view.kind !== "event") return null;
+    return events.find((e) => e.id === view.eventId) || null;
+  }, [view, events]);
+
+  // If the event we're viewing got deleted, fall back to home.
+  useEffect(() => {
+    if (view.kind === "event" && !loading && !currentEvent) {
+      setView({ kind: "home" });
+    }
+  }, [view, currentEvent, loading]);
+
+  function handleAdminLogout() {
+    clearAdminToken();
+    setIsAdmin(false);
+    setView({ kind: "home" });
+    setToast("Signed out.");
+  }
 
   return (
     <div className="min-h-full pb-12">
@@ -68,12 +127,15 @@ export default function App() {
         totalHours={totals.totalHours}
         totalSubmissions={totals.totalSubmissions}
         activeVolunteers={totals.activeVolunteers}
-        onNewSubmission={() => setFormOpen(true)}
+        isAdmin={isAdmin}
+        onAdminLogin={() => setAdminLoginOpen(true)}
+        onAdminLogout={handleAdminLogout}
+        onNewSubmission={() => setSubmissionFormOpen(true)}
       />
 
-      <main className="mx-auto mt-6 max-w-6xl px-4 sm:px-6">
+      <main className="mx-auto mt-6 max-w-6xl space-y-6 px-4 sm:px-6">
         {error && (
-          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
             <button
               onClick={refresh}
@@ -96,13 +158,38 @@ export default function App() {
               <circle cx="12" cy="12" r="9" opacity="0.25" />
               <path d="M21 12a9 9 0 0 0-9-9" strokeLinecap="round" />
             </svg>
-            Loading volunteer data…
+            Loading…
           </div>
+        ) : view.kind === "event" && currentEvent ? (
+          <EventDetailPage
+            event={currentEvent}
+            onBack={() => setView({ kind: "home" })}
+            onEventUpdated={(next) =>
+              setEvents((prev) =>
+                prev.map((e) => (e.id === next.id ? next : e))
+              )
+            }
+            onEventDeleted={() => {
+              setEvents((prev) =>
+                prev.filter((e) => e.id !== currentEvent.id)
+              );
+              setView({ kind: "home" });
+              setToast("Event deleted.");
+            }}
+          />
         ) : (
-          <VolunteerTable summaries={summaries} />
+          <>
+            <VolunteerTable summaries={summaries} />
+            {isAdmin && (
+              <EventsPanel
+                events={events}
+                onCreate={() => setCreateEventOpen(true)}
+                onOpenEvent={(id) => setView({ kind: "event", eventId: id })}
+              />
+            )}
+            <ExportButton summaries={summaries} />
+          </>
         )}
-
-        <ExportButton summaries={summaries} />
 
         <footer className="mt-4 text-center text-xs text-slate-500">
           ELA TCYA Volunteer Service Hours · Built with great love 大愛
@@ -110,12 +197,34 @@ export default function App() {
       </main>
 
       <SubmissionForm
-        open={formOpen}
-        onClose={() => setFormOpen(false)}
+        open={submissionFormOpen}
+        events={events}
+        onClose={() => setSubmissionFormOpen(false)}
         onSubmitted={async () => {
-          setFormOpen(false);
+          setSubmissionFormOpen(false);
           setToast("Hours submitted! Thank you for volunteering.");
           await refresh();
+        }}
+      />
+
+      <AdminLoginModal
+        open={adminLoginOpen}
+        onClose={() => setAdminLoginOpen(false)}
+        onLoggedIn={() => {
+          setAdminLoginOpen(false);
+          setIsAdmin(true);
+          setToast("Welcome, admin.");
+        }}
+      />
+
+      <CreateEventModal
+        open={createEventOpen}
+        onClose={() => setCreateEventOpen(false)}
+        onCreated={(ev) => {
+          setEvents((prev) => [...prev, ev]);
+          setCreateEventOpen(false);
+          setToast("Event created.");
+          setView({ kind: "event", eventId: ev.id });
         }}
       />
 

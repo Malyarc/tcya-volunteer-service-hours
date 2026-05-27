@@ -157,6 +157,14 @@ function FragmentRow({
         </td>
         <td className="whitespace-nowrap px-4 py-3 text-sm text-slate-600">
           {v.submissions.length}
+          {v.pendingCount > 0 && (
+            <span
+              className="ml-2 badge bg-amber-100 text-amber-800"
+              title="Submissions awaiting both staff check-in and volunteer check-out"
+            >
+              {v.pendingCount} pending
+            </span>
+          )}
         </td>
         <td className="whitespace-nowrap px-4 py-3 text-right">
           <span

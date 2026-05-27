@@ -30,9 +30,9 @@ if (fs.existsSync(DATA_FILE)) {
 
 fs.writeFileSync(
   DATA_FILE,
-  JSON.stringify({ submissions: [] }, null, 2),
+  JSON.stringify({ submissions: [], events: [] }, null, 2),
   "utf-8"
 );
 
-console.log("✓ All volunteer hours reset to 0.");
-console.log(`  Data file: ${DATA_FILE}`);
+console.log("All volunteer hours and events reset.");
+console.log(`Data file: ${DATA_FILE}`);

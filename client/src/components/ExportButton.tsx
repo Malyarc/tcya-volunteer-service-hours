@@ -68,7 +68,7 @@ export function ExportButton({ summaries }: Props) {
       { wch: 40 },
       { wch: 22 },
     ];
-    XLSX.utils.book_append_sheet(wb, detailSheet, "All Submissions");
+    XLSX.utils.book_append_sheet(wb, detailSheet, "Confirmed Submissions");
 
     // Sheet 3: Per-volunteer breakdown that mirrors the home page layout.
     const byVolunteerRows: Array<Record<string, string | number>> = [];
@@ -148,7 +148,8 @@ export function ExportButton({ summaries }: Props) {
         Download Excel Report
       </button>
       <p className="text-xs text-slate-500">
-        Includes a summary, all submissions, and a per-volunteer breakdown
+        Summary, confirmed submissions, and per-volunteer breakdown — only
+        entries where both staff check-in and volunteer check-out are green
         ({formatHours(totalHours)} cumulative hours).
       </p>
     </div>

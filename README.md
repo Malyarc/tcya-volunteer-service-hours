@@ -16,18 +16,47 @@ volunteer event sign-in / sign-out times and track cumulative service hours.
 
 ## Features
 
-- Hero dashboard showing total hours, total submissions, and active volunteers.
-- Alphabetically-sorted volunteer roster with searchable / filterable table.
-- Click a volunteer row to expand and see every service log they've submitted.
-- Submission form with searchable volunteer dropdown, predefined event names,
-  conditional "Others - please specify" input, date / time pickers, comments,
-  and live-calculated hours.
-- Backend computes and stores hours, validates input, and serializes writes so
-  concurrent submissions don't clobber each other.
-- One-click **Download Excel Report** button (Summary, All Submissions, and a
-  Per-Volunteer breakdown — three sheets).
-- Page auto-refreshes whenever the tab regains focus, so anyone visiting the
-  site always sees the latest numbers.
+**Public (no login required)**
+
+- Hero dashboard with total confirmed hours, total submissions, and active volunteers.
+- Alphabetically-sorted volunteer roster — click a name to expand and see every
+  confirmed service log.
+- "Log Volunteer Hours" submission form: searchable volunteer dropdown,
+  selectable event (with auto-filled date from the admin-created event),
+  arrival / end times, comments. Hours are calculated automatically.
+- One-click **Download Excel Report** — summary, confirmed submissions, and
+  per-volunteer breakdown (three sheets).
+- Auto-refreshes whenever the tab regains focus.
+
+**Admin (login required)**
+
+- "Admin Login" button at the top of the page. Single shared admin account.
+- After login, the dashboard adds an **Events** panel.
+- **Create Event**: pick from the master event list, set a date, optionally
+  add a custom name for "Others".
+- Click any event → **Event Detail Page** with:
+  - Volunteer picker (searchable, multi-select via checkboxes)
+  - Attendance table with three columns: Volunteer Name · Staff Check-in · Volunteer Check-out
+  - Click any check icon to toggle ✓ ↔ ✗
+  - Volunteers who submit a form but weren't pre-added by staff appear at the
+    bottom with a clear "Submitted but not pre-added by staff" banner.
+- **Hours only count toward the main page when BOTH check-in icons are green.**
+
+## How the flow works
+
+1. **Admin creates an event** (e.g. "Culture - Beach Cleanup, June 15, 2026").
+2. **Admin adds volunteers** to the event's attendance list — each entry
+   starts as ✓ Staff Check-in / ✗ Volunteer Check-out.
+3. **Volunteer fills out the form** and selects that event. The form
+   auto-fills the date from the event; the volunteer just enters their
+   arrival / end times and comments.
+4. **Server links the submission to the event**:
+   - If the volunteer was on the attendance list, their ✗ flips to ✓.
+   - If they were not on the list, they're added at the bottom with ✗ Staff /
+     ✓ Volunteer.
+5. **Admin reviews** the Event Detail Page and toggles any remaining check
+   icons. Once a row is ✓ ✓, that submission's hours show up on the main
+   page roster.
 
 ## Project layout
 
@@ -46,6 +75,41 @@ volunteer-tracker/
 │   └── data/submissions.json   (created on first run, persists all data)
 └── README.md
 ```
+
+## Admin password
+
+The admin account is gated by a single password. By default it is
+`tcya-admin-2026` so you can log in immediately for testing. **For
+production**, set the `ADMIN_PASSWORD` environment variable to something
+different — preferably a long random string — when starting the server.
+
+```bash
+ADMIN_PASSWORD='your-strong-password' npm start
+```
+
+You can also (optionally) set `SESSION_SECRET` to a random value to control
+how admin tokens are signed; if you don't, a deterministic value derived
+from the password is used.
+
+With PM2 + systemd you can pass the env vars in the unit file:
+
+```ini
+Environment=PORT=80
+Environment=ADMIN_PASSWORD=your-strong-password
+Environment=SESSION_SECRET=some-random-32-bytes
+```
+
+…or via PM2 ecosystem file:
+
+```bash
+pm2 delete tcya-volunteer-hours
+ADMIN_PASSWORD='your-strong-password' PORT=80 \
+  pm2 start src/index.js --name tcya-volunteer-hours --update-env
+pm2 save
+```
+
+Changing the password invalidates any existing admin sessions on next page
+load.
 
 ## Local development
 
@@ -177,14 +241,32 @@ You can `scp` it down for backup any time. Format:
 
 ```jsonc
 {
+  "events": [
+    {
+      "id": "uuid",
+      "name": "Culture - Beach Cleanup",
+      "customName": null,            // populated only when "Others" was picked
+      "date": "2026-06-15",
+      "createdAt": "2026-05-27T01:15:31.207Z",
+      "attendance": [
+        {
+          "volunteerName": "Aaron Tse",
+          "staffCheckin": true,      // admin added → true
+          "volunteerCheckout": true, // volunteer submitted form → true
+          "selfAdded": false         // true when not pre-added by staff
+        }
+      ]
+    }
+  ],
   "submissions": [
     {
       "id": "uuid",
+      "eventId": "uuid-of-event",
       "volunteerName": "Aaron Tse",
       "grade": "10th",
-      "eventName": "Charity - Food Distribution 蔬果發放",
+      "eventName": "Culture - Beach Cleanup",
       "customEventName": null,
-      "eventDate": "2026-05-20",
+      "eventDate": "2026-06-15",
       "arrivalTime": "09:00",
       "endTime": "12:30",
       "hours": 3.5,
