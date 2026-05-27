@@ -313,9 +313,15 @@ export function SubmissionForm({ open, events, onClose, onSubmitted }: Props) {
                   id="arrival"
                   type="time"
                   className="input"
+                  step={900}
                   value={state.arrivalTime}
-                  onChange={(e) => update("arrivalTime", e.target.value)}
+                  onChange={(e) =>
+                    update("arrivalTime", snapTo15(e.target.value))
+                  }
                 />
+                <p className="mt-1 text-xs text-slate-400">
+                  Rounded to 15-minute increments.
+                </p>
               </div>
 
               <div>
@@ -326,9 +332,13 @@ export function SubmissionForm({ open, events, onClose, onSubmitted }: Props) {
                   id="end"
                   type="time"
                   className="input"
+                  step={900}
                   value={state.endTime}
-                  onChange={(e) => update("endTime", e.target.value)}
+                  onChange={(e) => update("endTime", snapTo15(e.target.value))}
                 />
+                <p className="mt-1 text-xs text-slate-400">
+                  Rounded to 15-minute increments.
+                </p>
               </div>
 
               <div className="sm:col-span-2">
@@ -402,6 +412,22 @@ export function SubmissionForm({ open, events, onClose, onSubmitted }: Props) {
       </div>
     </div>
   );
+}
+
+// Snap a "HH:MM" time string to the nearest 15-minute boundary. Browsers
+// like Firefox/Safari let users type any minute value even when step=900 is
+// set, so we normalize on every change.
+function snapTo15(value: string): string {
+  if (!value || !/^\d{2}:\d{2}$/.test(value)) return value;
+  const [h, m] = value.split(":").map(Number);
+  let total = h * 60 + m;
+  total = Math.round(total / 15) * 15;
+  // Clamp to a valid 00:00 – 23:45 range; 24:00 wraps to 23:45.
+  if (total < 0) total = 0;
+  if (total > 23 * 60 + 45) total = 23 * 60 + 45;
+  const hh = String(Math.floor(total / 60)).padStart(2, "0");
+  const mm = String(total % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 function Spinner() {

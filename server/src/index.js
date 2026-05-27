@@ -77,7 +77,10 @@ function computeHours(arrivalTime, endTime) {
 }
 
 function isValidTime(t) {
-  return typeof t === "string" && /^\d{2}:\d{2}$/.test(t);
+  if (typeof t !== "string" || !/^\d{2}:\d{2}$/.test(t)) return false;
+  // Times must be on a 15-minute boundary (:00, :15, :30, :45).
+  const minutes = parseInt(t.slice(3, 5), 10);
+  return minutes % 15 === 0;
 }
 function isValidDate(d) {
   return typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
@@ -154,8 +157,10 @@ app.post("/api/submissions", async (req, res) => {
   }
   if (!grade || typeof grade !== "string") errors.push("grade is required");
   if (!eventId || typeof eventId !== "string") errors.push("eventId is required");
-  if (!isValidTime(arrivalTime)) errors.push("arrivalTime must be HH:MM");
-  if (!isValidTime(endTime)) errors.push("endTime must be HH:MM");
+  if (!isValidTime(arrivalTime))
+    errors.push("arrivalTime must be HH:MM on a 15-minute boundary");
+  if (!isValidTime(endTime))
+    errors.push("endTime must be HH:MM on a 15-minute boundary");
 
   const hours = computeHours(arrivalTime || "", endTime || "");
   if (hours <= 0) errors.push("endTime must be after arrivalTime");

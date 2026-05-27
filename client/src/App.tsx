@@ -187,7 +187,7 @@ export default function App() {
                 onOpenEvent={(id) => setView({ kind: "event", eventId: id })}
               />
             )}
-            <ExportButton summaries={summaries} />
+            {isAdmin && <ExportButton summaries={summaries} />}
           </>
         )}
 
