@@ -23,13 +23,13 @@ export function Header({
         }}
       />
       <div className="relative mx-auto max-w-6xl px-6 pt-8 pb-10 text-white">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex flex-col gap-4">
-            <div className="inline-flex w-fit items-center rounded-xl bg-white px-3 py-2 shadow-lg shadow-brand-950/25 ring-1 ring-white/60">
+        <div className="flex flex-wrap items-center justify-between gap-5">
+          <div className="flex items-center gap-5">
+            <div className="flex items-center justify-center rounded-2xl bg-white px-3 py-2 shadow-lg shadow-brand-950/25 ring-1 ring-white/60">
               <img
                 src="/tzu-chi-logo.png"
                 alt="Buddhist Tzu Chi Foundation"
-                className="h-10 w-auto sm:h-11"
+                className="h-14 w-auto sm:h-16"
               />
             </div>
             <div>
