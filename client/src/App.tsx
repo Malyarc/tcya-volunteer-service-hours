@@ -71,7 +71,7 @@ export default function App() {
         onNewSubmission={() => setFormOpen(true)}
       />
 
-      <main className="mx-auto -mt-6 max-w-6xl px-4 sm:px-6">
+      <main className="mx-auto mt-6 max-w-6xl px-4 sm:px-6">
         {error && (
           <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}

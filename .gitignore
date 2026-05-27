@@ -1,6 +1,7 @@
 node_modules/
 client/dist/
 server/data/submissions.json
+server/data/backups/
 *.tsbuildinfo
 *.log
 .DS_Store

@@ -9,12 +9,10 @@ volunteer event sign-in / sign-out times and track cumulative service hours.
 - **Branding**: Tzu Chi-inspired navy palette (`brand-700` ≈ deep "blue sky" navy)
   with warm gold accents.
 
-> **Note on the logo**: the lotus mark in the header is a generic stylized
-> lotus drawn from scratch — it is intentionally distinct from the Tzu Chi
-> Foundation's registered 8-petal-with-ship trademark. If your chapter has
-> rights to use the official logo, replace the SVG in `client/public/favicon.svg`
-> and the `LotusMark` component in `client/src/components/Header.tsx` (or drop
-> in an `<img src="/logo.png" />`).
+> **Note on branding**: The header displays the chapter's official logo file
+> at `client/public/tzu-chi-logo.png`. To swap it for a different image,
+> replace that file (PNG or SVG) and adjust the `<img>` tag in
+> `client/src/components/Header.tsx` if needed.
 
 ## Features
 
@@ -207,6 +205,28 @@ After editing, run `npm run build` and restart the service:
 
 ```bash
 sudo systemctl restart volunteer-tracker
+```
+
+## Resetting all hours to zero (for testing)
+
+When you want to wipe all volunteer hours and start fresh — for example after
+testing — SSH into the EC2 instance and run:
+
+```bash
+cd ~/tcya-volunteer-service-hours/server
+npm run reset
+```
+
+The script automatically writes a timestamped backup to
+`server/data/backups/` before clearing the data file, so the previous data is
+recoverable. The web app picks up the empty state on the next page load — no
+PM2 restart needed.
+
+To restore from the most recent backup:
+
+```bash
+cd ~/tcya-volunteer-service-hours/server/data
+cp "$(ls -t backups/*.json | head -1)" submissions.json
 ```
 
 ## Backups
