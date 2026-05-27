@@ -14,18 +14,20 @@ const DATA_DIR = path.resolve(__dirname, "..", "data");
 const DATA_FILE = path.join(DATA_DIR, "submissions.json");
 const CLIENT_DIST = path.resolve(__dirname, "..", "..", "client", "dist");
 
-// Admin credentials. The default works out of the box for testing — set
-// ADMIN_PASSWORD (and ideally SESSION_SECRET) in the environment for production.
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "tcya-admin-2026";
+// Admin credentials. Defaults work out of the box for testing — set
+// ADMIN_USERNAME / ADMIN_PASSWORD (and ideally SESSION_SECRET) in the
+// environment for production.
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "1013";
 const SESSION_SECRET =
   process.env.SESSION_SECRET ||
   crypto
     .createHash("sha256")
-    .update("ela-tcya-default-secret-" + ADMIN_PASSWORD)
+    .update("ela-tcya-default-secret-" + ADMIN_USERNAME + ":" + ADMIN_PASSWORD)
     .digest("hex");
 const ADMIN_TOKEN = crypto
   .createHmac("sha256", SESSION_SECRET)
-  .update(ADMIN_PASSWORD)
+  .update(ADMIN_USERNAME + ":" + ADMIN_PASSWORD)
   .digest("hex");
 
 if (!fssync.existsSync(DATA_DIR)) {
@@ -105,14 +107,21 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-// Auth: returns the admin token on correct password.
+// Auth: returns the admin token when username + password both match.
 app.post("/api/login", (req, res) => {
-  const { password } = req.body || {};
+  const { username, password } = req.body || {};
+  if (typeof username !== "string" || username.length === 0) {
+    return res.status(400).json({ error: "Username is required" });
+  }
   if (typeof password !== "string" || password.length === 0) {
     return res.status(400).json({ error: "Password is required" });
   }
-  if (!constantTimeEqual(password, ADMIN_PASSWORD)) {
-    return res.status(401).json({ error: "Invalid password" });
+  const userOk = constantTimeEqual(username, ADMIN_USERNAME);
+  const passOk = constantTimeEqual(password, ADMIN_PASSWORD);
+  // Always evaluate both checks so the response time doesn't leak which
+  // field was wrong.
+  if (!userOk || !passOk) {
+    return res.status(401).json({ error: "Invalid username or password" });
   }
   res.json({ token: ADMIN_TOKEN });
 });
@@ -385,11 +394,13 @@ if (fssync.existsSync(CLIENT_DIST)) {
 app.listen(PORT, () => {
   console.log(`Volunteer tracker API listening on port ${PORT}`);
   console.log(`Data file: ${DATA_FILE}`);
+  const usingDefaults =
+    !process.env.ADMIN_USERNAME && !process.env.ADMIN_PASSWORD;
   console.log(
-    `Admin login enabled. ${
-      process.env.ADMIN_PASSWORD
-        ? "(ADMIN_PASSWORD is set via environment)"
-        : "(default password in use — set ADMIN_PASSWORD env var to change)"
+    `Admin login enabled as user "${ADMIN_USERNAME}"${
+      usingDefaults
+        ? " (default credentials — set ADMIN_USERNAME / ADMIN_PASSWORD to change)"
+        : " (credentials set via environment)"
     }`
   );
 });

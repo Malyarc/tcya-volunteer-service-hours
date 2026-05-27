@@ -37,11 +37,14 @@ async function handle<T>(res: Response): Promise<T> {
 
 // ---------- Auth ----------
 
-export async function adminLogin(password: string): Promise<string> {
+export async function adminLogin(
+  username: string,
+  password: string
+): Promise<string> {
   const res = await fetch(`${API_BASE}/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ username, password }),
   });
   const data = await handle<{ token: string }>(res);
   return data.token;

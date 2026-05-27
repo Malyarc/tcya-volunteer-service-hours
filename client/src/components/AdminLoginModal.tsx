@@ -9,6 +9,7 @@ interface Props {
 }
 
 export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -16,6 +17,7 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
 
   useEffect(() => {
     if (open) {
+      setUsername("");
       setPassword("");
       setError(null);
       setShowPassword(false);
@@ -34,13 +36,17 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (!username.trim()) {
+      setError("Please enter the admin username.");
+      return;
+    }
     if (!password.trim()) {
       setError("Please enter the admin password.");
       return;
     }
     try {
       setSubmitting(true);
-      const token = await adminLogin(password);
+      const token = await adminLogin(username.trim(), password);
       setAdminToken(token);
       onLoggedIn();
     } catch (err) {
@@ -86,19 +92,35 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-5">
+          <div className="mb-4">
+            <label className="label" htmlFor="admin-username">
+              Username
+            </label>
+            <input
+              id="admin-username"
+              type="text"
+              className="input"
+              autoFocus
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="admin"
+              spellCheck={false}
+            />
+          </div>
+
           <label className="label" htmlFor="admin-password">
-            Admin Password
+            Password
           </label>
           <div className="relative">
             <input
               id="admin-password"
               type={showPassword ? "text" : "password"}
               className="input pr-12"
-              autoFocus
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter admin password"
+              placeholder="Enter password"
             />
             <button
               type="button"

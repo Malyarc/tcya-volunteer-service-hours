@@ -76,25 +76,30 @@ volunteer-tracker/
 └── README.md
 ```
 
-## Admin password
+## Admin credentials
 
-The admin account is gated by a single password. By default it is
-`tcya-admin-2026` so you can log in immediately for testing. **For
-production**, set the `ADMIN_PASSWORD` environment variable to something
-different — preferably a long random string — when starting the server.
+The admin account is gated by a single username + password. Defaults:
+
+| Field | Default |
+|---|---|
+| Username | `admin` |
+| Password | `1013` |
+
+**For production**, override either or both via environment variables.
 
 ```bash
-ADMIN_PASSWORD='your-strong-password' npm start
+ADMIN_USERNAME='admin' ADMIN_PASSWORD='your-strong-password' npm start
 ```
 
 You can also (optionally) set `SESSION_SECRET` to a random value to control
 how admin tokens are signed; if you don't, a deterministic value derived
-from the password is used.
+from the credentials is used.
 
 With PM2 + systemd you can pass the env vars in the unit file:
 
 ```ini
 Environment=PORT=80
+Environment=ADMIN_USERNAME=admin
 Environment=ADMIN_PASSWORD=your-strong-password
 Environment=SESSION_SECRET=some-random-32-bytes
 ```
@@ -103,13 +108,13 @@ Environment=SESSION_SECRET=some-random-32-bytes
 
 ```bash
 pm2 delete tcya-volunteer-hours
-ADMIN_PASSWORD='your-strong-password' PORT=80 \
+ADMIN_USERNAME='admin' ADMIN_PASSWORD='your-strong-password' PORT=80 \
   pm2 start src/index.js --name tcya-volunteer-hours --update-env
 pm2 save
 ```
 
-Changing the password invalidates any existing admin sessions on next page
-load.
+Changing the credentials invalidates any existing admin sessions on next
+page load.
 
 ## Local development
 
