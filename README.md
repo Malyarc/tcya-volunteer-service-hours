@@ -401,7 +401,7 @@ sudo systemctl restart volunteer-tracker
 **On EC2** — SSH in and run:
 
 ```bash
-cd ~/tcya-volunteer-service-hours/server
+cd ~/volunteer-tracker/server
 npm run reset
 ```
 
@@ -412,7 +412,7 @@ page load — no PM2 restart needed.
 To restore from the most recent backup:
 
 ```bash
-cd ~/tcya-volunteer-service-hours/server/data
+cd ~/volunteer-tracker/server/data
 cp "$(ls -t backups/*.json | head -1)" submissions.json
 ```
 

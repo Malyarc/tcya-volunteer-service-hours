@@ -8,6 +8,7 @@
 import express from "express";
 import cors from "cors";
 import serverless from "serverless-http";
+import { connectLambda } from "@netlify/blobs";
 import { createRouter, deriveSessionSecret } from "../../../server/src/routes.js";
 import { createBlobsStorage } from "./storage-blobs.js";
 
@@ -33,4 +34,12 @@ app.use(
   })
 );
 
-export const handler = serverless(app);
+const expressHandler = serverless(app);
+
+// Wrap the serverless-http handler so we can call connectLambda(event)
+// first. Without this the @netlify/blobs SDK can't pick up the site/token
+// context inside an Express request handler and getStore() throws.
+export const handler = async (event, context) => {
+  connectLambda(event);
+  return expressHandler(event, context);
+};

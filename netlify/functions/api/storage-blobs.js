@@ -12,16 +12,16 @@
 import { getStore } from "@netlify/blobs";
 
 export function createBlobsStorage(storeName, key) {
-  // Lazy-construct so importing the module outside of a Netlify runtime
-  // (e.g. local syntax checks) doesn't throw before any request comes in.
-  let store = null;
-  function getOrCreateStore() {
-    if (!store) store = getStore(storeName);
-    return store;
+  // Construct the store per-request rather than caching at module scope.
+  // @netlify/blobs binds the request's siteID/token at construction time,
+  // and that context is only available *after* connectLambda(event) has
+  // been called for the current invocation (see api.mjs).
+  function store() {
+    return getStore(storeName);
   }
 
   async function readData() {
-    const data = await getOrCreateStore().get(key, { type: "json" });
+    const data = await store().get(key, { type: "json" });
     if (!data || typeof data !== "object") {
       return { submissions: [], events: [] };
     }
@@ -34,7 +34,7 @@ export function createBlobsStorage(storeName, key) {
   async function writeData(updater) {
     const current = await readData();
     const next = await updater(current);
-    await getOrCreateStore().setJSON(key, next);
+    await store().setJSON(key, next);
     return next;
   }
 

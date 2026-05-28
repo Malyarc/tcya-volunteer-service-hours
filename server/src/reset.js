@@ -2,9 +2,9 @@
 // Always makes a timestamped backup first so the data can be recovered.
 //
 // Usage (from anywhere on the server):
-//   cd ~/tcya-volunteer-service-hours/server && npm run reset
+//   cd ~/volunteer-tracker/server && npm run reset
 // Or directly:
-//   node ~/tcya-volunteer-service-hours/server/src/reset.js
+//   node ~/volunteer-tracker/server/src/reset.js
 
 import fs from "fs";
 import path from "path";
