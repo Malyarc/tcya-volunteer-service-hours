@@ -4,8 +4,9 @@ A modern web app for the **East Los Angeles Tzu Chi Youth Association** to log
 volunteer event sign-in / sign-out times and track cumulative service hours.
 
 - **Frontend**: React + TypeScript + Vite + Tailwind CSS
-- **Backend**: Node.js + Express (JSON file storage)
-- **Target host**: AWS EC2 t2.micro / t3.micro (Ubuntu)
+- **Backend**: Node.js + Express (shared route layer)
+- **Storage**: JSON file (EC2) **or** Netlify Blobs (Netlify) — same schema
+- **Hosting options**: AWS EC2 t2.micro / t3.micro **or** Netlify (free tier)
 - **Branding**: Tzu Chi-inspired navy palette (`brand-700` ≈ deep "blue sky" navy)
   with warm gold accents.
 
@@ -62,17 +63,27 @@ volunteer event sign-in / sign-out times and track cumulative service hours.
 
 ```
 volunteer-tracker/
-├── client/               React + TS app (Vite)
+├── client/                  React + TS app (Vite)
 │   ├── src/
-│   │   ├── components/   Header, VolunteerTable, SubmissionForm, ExportButton, Toast
-│   │   ├── data/         volunteers.ts, events.ts (edit to add new names)
-│   │   ├── api.ts        Tiny fetch wrapper
-│   │   ├── utils.ts      Hour formatting, summary aggregation
+│   │   ├── components/      Header, VolunteerTable, SubmissionForm, ExportButton, Toast
+│   │   ├── data/            volunteers.ts, events.ts (edit to add new names)
+│   │   ├── api.ts           Tiny fetch wrapper
+│   │   ├── utils.ts         Hour formatting, summary aggregation
 │   │   └── App.tsx
 │   └── ...
-├── server/               Express API + static-file server
-│   ├── src/index.js
-│   └── data/submissions.json   (created on first run, persists all data)
+├── server/                  Backend
+│   └── src/
+│       ├── routes.js        Shared Express router (used by both deployments)
+│       ├── storage-file.js  File-backed storage (EC2)
+│       ├── index.js         EC2 entry point — listens on a port, serves /api + static client
+│       └── reset.js         Local "wipe data" script (file storage only)
+├── netlify/
+│   └── functions/
+│       └── api/
+│           ├── api.mjs            Netlify Function entry (wraps Express via serverless-http)
+│           ├── storage-blobs.js   Netlify Blobs storage
+│           └── package.json       Function-local deps (@netlify/blobs, serverless-http, …)
+├── netlify.toml             Netlify build + /api/* redirect
 └── README.md
 ```
 
@@ -144,6 +155,88 @@ npm start             # express serves the API and the built client on :4000
 ```
 
 Visit `http://<host>:4000`.
+
+## Deploy to Netlify (recommended)
+
+Netlify hosts the React build on its CDN, runs the Express API as a serverless
+function, and persists data in **Netlify Blobs** — all on the free tier. There
+are no EC2 instances or PM2 processes to manage.
+
+### 1. Create the site
+
+1. Push this repo to GitHub (or GitLab / Bitbucket).
+2. In the Netlify dashboard: **Add new site → Import an existing project →**
+   pick the repo. Leave the build settings as auto-detected; Netlify reads
+   `netlify.toml` for the build command, publish directory, and function
+   directory.
+3. Netlify Blobs is enabled automatically for new sites — no extra setup.
+
+### 2. Set environment variables (Site configuration → Environment variables)
+
+| Key | Value |
+|---|---|
+| `ADMIN_USERNAME` | `admin` (or your choice) |
+| `ADMIN_PASSWORD` | `1013` (change this for production) |
+| `SESSION_SECRET` | A random 32+ character string (optional but recommended) |
+
+If you don't set these the defaults from local development are used.
+
+### 3. Deploy
+
+Click **Deploy site**. Netlify will:
+
+1. Run `cd client && npm install && npm run build` (from `netlify.toml`).
+2. Bundle `netlify/functions/api/api.mjs` and its dependencies with esbuild.
+3. Publish `client/dist` and route `/api/*` to the function.
+
+The site is live at the assigned `*.netlify.app` URL, or attach a custom
+domain in **Domain management**.
+
+### 4. (Optional) Test locally with the Netlify CLI
+
+```bash
+npm install -g netlify-cli
+netlify login
+cd path/to/volunteer-tracker
+netlify dev
+```
+
+`netlify dev` runs the Vite frontend, the function (with a local Blobs
+emulator), and the `/api/*` redirect — the production setup, but on
+`localhost`.
+
+### 5. Resetting data on Netlify
+
+Two options:
+
+- **From the admin account**, while logged in, hit the admin reset endpoint
+  (the admin token is in browser `localStorage` under `ela-tcya-admin-token`):
+
+  ```bash
+  curl -X POST https://your-site.netlify.app/api/admin/reset \
+       -H "X-Admin-Token: <paste-token>"
+  ```
+
+- **From your laptop** via the Netlify CLI:
+
+  ```bash
+  netlify blobs:delete volunteer-data main
+  ```
+
+Both produce an empty `{ submissions: [], events: [] }` state on the next
+page load.
+
+### 6. Free-tier capacity check
+
+For a chapter of ~80 volunteers running 2 events / week, free-tier usage is
+nowhere near the limits:
+
+| Resource | Free tier | Estimated usage |
+|---|---|---|
+| Bandwidth | 100 GB / mo | < 1 GB |
+| Function invocations | 125k / mo | a few thousand |
+| Function runtime | 100h / mo | < 1h |
+| Blobs storage | 1 GB | a few MB |
 
 ## Deploy to an Ubuntu EC2 micro instance
 
@@ -236,13 +329,22 @@ behind a reverse proxy.
 
 ## Where is the data?
 
-Every submission is appended to:
+The data shape is identical across both deployments — only the storage backend
+differs:
 
-```
-server/data/submissions.json
-```
+- **EC2**: a JSON file at `server/data/submissions.json`. Back it up with
+  `scp` or cron.
+- **Netlify**: a single JSON blob under the `volunteer-data` store, key
+  `main`. Download it any time with:
 
-You can `scp` it down for backup any time. Format:
+  ```bash
+  netlify blobs:get volunteer-data main > submissions.json
+  ```
+
+  Or, while logged in as admin, hit `GET /api/admin/export` to download a
+  timestamped backup straight from the browser.
+
+Format:
 
 ```jsonc
 {
@@ -296,18 +398,16 @@ sudo systemctl restart volunteer-tracker
 
 ## Resetting all hours to zero (for testing)
 
-When you want to wipe all volunteer hours and start fresh — for example after
-testing — SSH into the EC2 instance and run:
+**On EC2** — SSH in and run:
 
 ```bash
 cd ~/tcya-volunteer-service-hours/server
 npm run reset
 ```
 
-The script automatically writes a timestamped backup to
-`server/data/backups/` before clearing the data file, so the previous data is
-recoverable. The web app picks up the empty state on the next page load — no
-PM2 restart needed.
+The script writes a timestamped backup to `server/data/backups/` before
+clearing the data file. The web app picks up the empty state on the next
+page load — no PM2 restart needed.
 
 To restore from the most recent backup:
 
@@ -316,13 +416,26 @@ cd ~/tcya-volunteer-service-hours/server/data
 cp "$(ls -t backups/*.json | head -1)" submissions.json
 ```
 
+**On Netlify** — see the
+["Resetting data on Netlify"](#5-resetting-data-on-netlify) section above.
+Either hit `POST /api/admin/reset` as an authenticated admin, or run
+`netlify blobs:delete volunteer-data main` from your laptop.
+
 ## Backups
 
-The whole app state is `server/data/submissions.json`. A simple cron-based
-backup is plenty:
+**EC2.** The whole app state is `server/data/submissions.json`. A simple
+cron-based backup is plenty:
 
 ```bash
 # crontab -e (run as ubuntu)
 0 * * * * cp /home/ubuntu/volunteer-tracker/server/data/submissions.json \
   /home/ubuntu/backups/submissions-$(date +\%Y\%m\%d-\%H).json
+```
+
+**Netlify.** While logged in as admin, hit
+`GET /api/admin/export` from a browser to download a timestamped JSON of
+the full data — or from your laptop:
+
+```bash
+netlify blobs:get volunteer-data main > backups/submissions-$(date +%Y%m%d-%H).json
 ```

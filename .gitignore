@@ -6,3 +6,4 @@ server/data/backups/
 *.log
 .DS_Store
 .env
+.netlify/

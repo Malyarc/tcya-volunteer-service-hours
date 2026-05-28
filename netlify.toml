@@ -1,0 +1,35 @@
+# Netlify build & runtime configuration.
+#
+# - The frontend is a Vite build inside the `client` workspace.
+# - The backend lives in `netlify/functions/api/` and is invoked via the
+#   `/api/*` rewrite below.
+# - Production data is persisted to Netlify Blobs (no extra services).
+
+[build]
+  base    = "/"
+  command = "cd client && npm install && npm run build"
+  publish = "client/dist"
+
+[functions]
+  # Each function lives in its own subfolder so it can carry a
+  # function-local package.json with its own dependencies.
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  # Allow the function to import from server/src (route definitions live
+  # there and are shared with the EC2 entry).
+  included_files = ["server/src/**"]
+
+[[redirects]]
+  # Forward /api/* to the API function while keeping the original URL
+  # so Express still matches /api/... routes.
+  from   = "/api/*"
+  to     = "/.netlify/functions/api/:splat"
+  status = 200
+  force  = true
+
+[[redirects]]
+  # SPA fallback: any non-API GET serves index.html so the React router
+  # can take over.
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
