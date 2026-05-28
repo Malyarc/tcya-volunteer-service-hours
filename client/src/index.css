@@ -54,6 +54,22 @@ body {
   }
 }
 
+/* Subtle horizontal shake used by the passcode gate on a wrong attempt. */
+@keyframes shake {
+  10%, 90% {
+    transform: translateX(-2px);
+  }
+  20%, 80% {
+    transform: translateX(4px);
+  }
+  30%, 50%, 70% {
+    transform: translateX(-8px);
+  }
+  40%, 60% {
+    transform: translateX(8px);
+  }
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 10px;

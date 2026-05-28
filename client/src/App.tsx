@@ -5,6 +5,7 @@ import { SubmissionForm } from "./components/SubmissionForm";
 import { ExportButton } from "./components/ExportButton";
 import { Toast } from "./components/Toast";
 import { AdminLoginModal } from "./components/AdminLoginModal";
+import { PasscodeGate } from "./components/PasscodeGate";
 import { EventsPanel } from "./components/admin/EventsPanel";
 import { CreateEventModal } from "./components/admin/CreateEventModal";
 import { EventDetailPage } from "./components/admin/EventDetailPage";
@@ -20,7 +21,19 @@ import { buildSummaries, isCountableSubmission } from "./utils";
 
 type View = { kind: "home" } | { kind: "event"; eventId: string };
 
+const UNLOCK_KEY = "ela-tcya-app-unlocked";
+
 export default function App() {
+  // Soft front-door passcode gate. Stored in sessionStorage so it resets when
+  // the tab closes but persists across reloads in the same session.
+  const [unlocked, setUnlocked] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(UNLOCK_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [events, setEvents] = useState<VolunteerEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -121,8 +134,28 @@ export default function App() {
     setToast("Signed out.");
   }
 
+  function handleUnlock() {
+    try {
+      sessionStorage.setItem(UNLOCK_KEY, "true");
+    } catch {
+      // sessionStorage may be unavailable in some private modes; the
+      // unlock still applies for this view either way.
+    }
+    setUnlocked(true);
+  }
+
   return (
-    <div className="min-h-full pb-12">
+    <div className="relative min-h-full pb-12">
+      {/* Lock the visible app behind a blur and disable interaction until the
+          passcode is entered. */}
+      <div
+        className={
+          unlocked
+            ? "min-h-full"
+            : "min-h-full select-none blur-md pointer-events-none transition-[filter] duration-300"
+        }
+        aria-hidden={!unlocked}
+      >
       <Header
         totalHours={totals.totalHours}
         totalSubmissions={totals.totalSubmissions}
@@ -229,6 +262,9 @@ export default function App() {
       />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
+      </div>
+
+      {!unlocked && <PasscodeGate onUnlock={handleUnlock} />}
     </div>
   );
 }
