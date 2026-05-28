@@ -6,7 +6,7 @@
 # - Production data is persisted to Netlify Blobs (no extra services).
 
 [build]
-  base    = "/"
+  # Run from the repo root (the default; no `base` line needed).
   command = "cd client && npm install && npm run build"
   publish = "client/dist"
 
