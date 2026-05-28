@@ -9,7 +9,7 @@ interface Props {
 }
 
 export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -17,7 +17,7 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
 
   useEffect(() => {
     if (open) {
-      setUsername("");
+      setUsername("admin");
       setPassword("");
       setError(null);
       setShowPassword(false);
@@ -100,7 +100,6 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
               id="admin-username"
               type="text"
               className="input"
-              autoFocus
               autoComplete="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -117,6 +116,7 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
               id="admin-password"
               type={showPassword ? "text" : "password"}
               className="input pr-12"
+              autoFocus
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
