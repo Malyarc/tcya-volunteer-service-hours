@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
+import type { Submission } from "../types";
 import type { VolunteerSummary } from "../utils";
 import { displayEventName, formatDate, formatHours, formatTime12h } from "../utils";
+import {
+  downloadEventCertificate,
+  downloadVolunteerCertificate,
+} from "../certificate";
 
 interface Props {
   summaries: VolunteerSummary[];
@@ -93,6 +98,9 @@ export function VolunteerTable({ summaries }: Props) {
               <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Total Hours
               </th>
+              <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Certificate
+              </th>
               <th className="w-12" />
             </tr>
           </thead>
@@ -100,7 +108,7 @@ export function VolunteerTable({ summaries }: Props) {
             {filtered.length === 0 && (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className="px-5 py-10 text-center text-sm text-slate-500"
                 >
                   No volunteers match your search.
@@ -177,6 +185,23 @@ function FragmentRow({
             {formatHours(v.totalHours)} hrs
           </span>
         </td>
+        <td
+          className="whitespace-nowrap px-4 py-3 text-right"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <CertificateButton
+            label="Download"
+            disabled={!hasHours}
+            title={
+              hasHours
+                ? "Download certification letter"
+                : "No confirmed hours yet"
+            }
+            onClick={() =>
+              downloadVolunteerCertificate(v.name, v.totalHours, v.submissions)
+            }
+          />
+        </td>
         <td className="px-4 py-3 text-right text-slate-400">
           <svg
             viewBox="0 0 24 24"
@@ -195,7 +220,7 @@ function FragmentRow({
       </tr>
       {isOpen && (
         <tr className="bg-slate-50/60">
-          <td colSpan={5} className="px-5 py-5">
+          <td colSpan={6} className="px-5 py-5">
             {v.submissions.length === 0 ? (
               <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
                 No service hours logged yet.
@@ -223,32 +248,18 @@ function FragmentRow({
                       <th className="px-4 py-2 text-left font-semibold">
                         Comments
                       </th>
+                      <th className="px-4 py-2 text-right font-semibold">
+                        Certificate
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {v.submissions.map((s) => (
-                      <tr key={s.id} className="align-top">
-                        <td className="whitespace-nowrap px-4 py-2 text-slate-700">
-                          {formatDate(s.eventDate)}
-                        </td>
-                        <td className="px-4 py-2 text-slate-700">
-                          {displayEventName(s)}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-2 text-slate-700">
-                          {formatTime12h(s.arrivalTime)}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-2 text-slate-700">
-                          {formatTime12h(s.endTime)}
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-2 text-right font-medium text-brand-700">
-                          {formatHours(s.hours)}
-                        </td>
-                        <td className="px-4 py-2 text-slate-600">
-                          {s.comments || (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </td>
-                      </tr>
+                      <SubmissionRow
+                        key={s.id}
+                        submission={s}
+                        volunteerName={v.name}
+                      />
                     ))}
                   </tbody>
                 </table>
@@ -258,6 +269,94 @@ function FragmentRow({
         </tr>
       )}
     </>
+  );
+}
+
+function SubmissionRow({
+  submission,
+  volunteerName,
+}: {
+  submission: Submission;
+  volunteerName: string;
+}) {
+  return (
+    <tr className="align-top">
+      <td className="whitespace-nowrap px-4 py-2 text-slate-700">
+        {formatDate(submission.eventDate)}
+      </td>
+      <td className="px-4 py-2 text-slate-700">{displayEventName(submission)}</td>
+      <td className="whitespace-nowrap px-4 py-2 text-slate-700">
+        {formatTime12h(submission.arrivalTime)}
+      </td>
+      <td className="whitespace-nowrap px-4 py-2 text-slate-700">
+        {formatTime12h(submission.endTime)}
+      </td>
+      <td className="whitespace-nowrap px-4 py-2 text-right font-medium text-brand-700">
+        {formatHours(submission.hours)}
+      </td>
+      <td className="px-4 py-2 text-slate-600">
+        {submission.comments || <span className="text-slate-400">—</span>}
+      </td>
+      <td className="whitespace-nowrap px-4 py-2 text-right">
+        <CertificateButton
+          label="Download"
+          title="Download certification letter for this event"
+          onClick={() => downloadEventCertificate(volunteerName, submission)}
+        />
+      </td>
+    </tr>
+  );
+}
+
+function CertificateButton({
+  label,
+  onClick,
+  disabled,
+  title,
+}: {
+  label: string;
+  onClick: () => void | Promise<void>;
+  disabled?: boolean;
+  title?: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  async function handleClick(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (disabled || busy) return;
+    setBusy(true);
+    try {
+      await onClick();
+    } catch (err) {
+      console.error("Failed to generate certificate", err);
+      alert("Sorry, the certificate could not be generated. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={disabled || busy}
+      title={title}
+      className="inline-flex items-center gap-1.5 rounded-lg border border-brand-200 bg-white px-2.5 py-1.5 text-xs font-medium text-brand-700 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400 disabled:hover:bg-slate-50"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="h-3.5 w-3.5"
+        aria-hidden
+      >
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+      </svg>
+      {busy ? "Generating…" : label}
+    </button>
   );
 }
 
