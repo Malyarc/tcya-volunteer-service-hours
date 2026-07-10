@@ -34,9 +34,18 @@ A large feature + storage migration, built, audited, code-reviewed, and verified
 
 ## Current state / what's left
 
+- **DEPLOYED to prod and verified end-to-end (2026-07-10):**
+  https://tcyavolunteers.netlify.app on Neon. Verified live: public roster (90
+  from Neon), auth gating (401), admin login, volunteer create + custom fields +
+  code sequence, duplicate-name 409, event create, QR check-in/out with
+  timestamps, manual time edit preserving the check-in time, public submission +
+  self-added flip, PII/QR-code not leaked publicly, export. Prod left pristine
+  (90 roster, 0 events/submissions).
 - **Code:** complete and green. See `CLAUDE.md` for invariants + test layout.
-- **Deploy:** requires `DATABASE_URL`, `ADMIN_PASSWORD` (and ideally `SESSION_SECRET`)
-  set in Netlify env. Admin **fails closed** in prod if `ADMIN_PASSWORD` is unset.
+- **⚠️ ACTION FOR OPERATOR:** `ADMIN_PASSWORD` is currently the weak default
+  `1013`. Change it to a strong value in Netlify → Environment variables (and set
+  `SESSION_SECRET`). The login throttle + fail-closed default help, but a strong
+  password is the real control.
 - **Known non-blocking gaps** (from the audit, accepted): the per-instance in-memory
   login throttle is best-effort on serverless — the real controls are the
   fail-closed default + a strong `ADMIN_PASSWORD`. No CI yet; the Postgres parity
