@@ -234,7 +234,8 @@ export function runSuite(withServer, label) {
       assert.equal(added.status, 200);
       assert.equal(added.body.attendance.length, 1);
       assert.equal(added.body.attendance[0].volunteerName, "Aaron Tse");
-      assert.equal(added.body.attendance[0].staffCheckin, true);
+      // Pre-registering adds to the list but does NOT check them in.
+      assert.equal(added.body.attendance[0].staffCheckin, false);
       assert.equal(added.body.attendance[0].volunteerCheckout, false);
       assert.equal(added.body.attendance[0].checkinAt, null, "pre-register sets no check-in time");
     });
@@ -409,7 +410,10 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      // 16:00Z–19:00Z = 3.0 hours.
+      // Give Aaron a grade so we can assert the derived submission picks it up.
+      const aaron = (await api.get("/api/volunteers", auth)).body.find((v) => v.name === "Aaron Tse");
+      await api.send("PATCH", `/api/volunteers/${aaron.id}`, { grade: "11th" }, auth);
+      // 16:00Z–19:00Z = 3.0 hours; local (America/Los_Angeles, PDT) = 09:00–12:00.
       await logHours(
         api, auth, event.id, "Aaron Tse",
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
@@ -420,6 +424,9 @@ export function runSuite(withServer, label) {
       assert.equal(subs.length, 1, "one derived submission");
       assert.equal(subs[0].hours, 3, "hours = checkout − checkin");
       assert.equal(subs[0].eventId, event.id);
+      assert.equal(subs[0].grade, "11th", "derived submission carries the volunteer's grade");
+      assert.equal(subs[0].arrivalTime, "09:00", "sign-in HH:MM in chapter tz");
+      assert.equal(subs[0].endTime, "12:00", "sign-out HH:MM in chapter tz");
     });
   });
 
@@ -601,41 +608,80 @@ export function runSuite(withServer, label) {
     });
   });
 
-  // ---------------- Manual time editor marks the side checked ----------------
+  // ---------------- Boolean flags stay in lock-step with timestamps ----------------
 
-  test(name("PATCH checkoutAt only (no boolean) marks volunteerCheckout true"), async () => {
+  test(name("checkout-only edit on a pre-registered volunteer does NOT auto-stamp a bogus check-in"), async () => {
+    // Regression for the round-2 HIGH bug: pre-register (no check-in), then set
+    // only a PAST checkout. Must not stamp check-in=now (which would make
+    // checkout < checkin and silently drop the hours). The row stays incomplete.
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      await api.send(
-        "POST",
-        `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse"] },
-        auth
-      );
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: ["Aaron Tse"] }, auth);
+      const r = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
+        volunteerName: "Aaron Tse", checkoutAt: "2026-03-15T20:00:00.000Z",
+      }, auth);
+      const row = r.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
+      assert.equal(row.volunteerCheckout, true);
+      assert.equal(row.staffCheckin, false, "no bogus check-in");
+      assert.equal(row.checkinAt, null, "no bogus check-in time");
+      assert.equal((await api.get("/api/submissions")).body.length, 0, "incomplete => no hours");
+    });
+  });
+
+  test(name("setting a check-out time marks it checked; the check-in side is untouched"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, "Aaron Tse");
+      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, auth); // real check-in
       const iso = "2026-03-15T20:00:00.000Z";
       const r = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
         volunteerName: "Aaron Tse", checkoutAt: iso,
       }, auth);
       const row = r.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
-      assert.equal(row.volunteerCheckout, true, "setting a checkout time marks it checked");
+      assert.equal(row.volunteerCheckout, true);
       assert.equal(row.checkoutAt, iso);
-      assert.equal(row.staffCheckin, true, "the pre-registered check-in is not clobbered");
+      assert.equal(row.staffCheckin, true, "the real check-in is preserved");
     });
   });
 
-  test(name("PATCH checkinAt:null clears the time without unchecking"), async () => {
+  test(name("clearing a check-in time also un-checks the flag AND drops the derived hours"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const code = await codeFor(api, auth, "Aaron Tse");
-      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, auth);
+      // Log complete hours first.
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
+      );
+      assert.equal((await api.get("/api/submissions")).body.length, 1);
+      // Clear the check-in time.
       const r = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
         volunteerName: "Aaron Tse", checkinAt: null,
       }, auth);
       const row = r.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
       assert.equal(row.checkinAt, null, "time cleared");
-      assert.equal(row.staffCheckin, true, "flag left intact");
+      assert.equal(row.staffCheckin, false, "flag follows the timestamp");
+      assert.equal((await api.get("/api/submissions")).body.length, 0, "hours dropped");
+    });
+  });
+
+  test(name("toggling the staff check-in flag off clears the time and drops hours"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
+      );
+      const r = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
+        volunteerName: "Aaron Tse", staffCheckin: false,
+      }, auth);
+      const row = r.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
+      assert.equal(row.staffCheckin, false);
+      assert.equal(row.checkinAt, null, "toggling off clears the time");
+      assert.equal((await api.get("/api/submissions")).body.length, 0);
     });
   });
 

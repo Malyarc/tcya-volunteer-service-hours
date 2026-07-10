@@ -11,7 +11,7 @@ import crypto from "crypto";
 import { neon } from "@neondatabase/serverless";
 import { SCHEMA_STATEMENTS, SEED_LOCK_KEY } from "./schema.js";
 import { SEED_VOLUNTEERS } from "../data/seed-volunteers.js";
-import { hoursBetween, localHHMM } from "../hours.js";
+import { hoursBetween, localHHMM, isComplete } from "../hours.js";
 
 // ---------- row → API-shape mappers ----------
 
@@ -150,16 +150,16 @@ export function createPostgresStore(connectionString) {
   async function reconcileSubmission(eventId, volunteerName) {
     const rows = await sql`
       SELECT a.checkin_at, a.checkout_at, e.name AS ev_name, e.custom_name, e.date AS ev_date,
-             (SELECT grade FROM volunteers WHERE name = a.volunteer_name ORDER BY created_at LIMIT 1) AS v_grade
+             (SELECT grade FROM volunteers WHERE name = a.volunteer_name ORDER BY created_at ASC, code ASC LIMIT 1) AS v_grade
       FROM attendance a
       JOIN events e ON e.id = a.event_id
       WHERE a.event_id = ${eventId} AND a.volunteer_name = ${volunteerName}`;
     const r = rows[0];
-    const hrs = r ? hoursBetween(toIso(r.checkin_at), toIso(r.checkout_at)) : 0;
-    if (!r || hrs <= 0) {
+    if (!r || !isComplete(toIso(r.checkin_at), toIso(r.checkout_at))) {
       await sql`DELETE FROM submissions WHERE event_id = ${eventId} AND volunteer_name = ${volunteerName}`;
       return;
     }
+    const hrs = hoursBetween(toIso(r.checkin_at), toIso(r.checkout_at));
     const eventName = r.custom_name ? r.custom_name : r.ev_name;
     await sql`
       INSERT INTO submissions
@@ -249,8 +249,7 @@ export function createPostgresStore(connectionString) {
     ];
     if (nameChanged) {
       // Cascade the rename to keep history attached. Touch submissions BEFORE
-      // attendance so the lock order matches upsertSubmission (submission then
-      // attendance) — otherwise the two could deadlock.
+      // attendance for a consistent lock order across writers (avoids deadlock).
       statements.push(
         sql`UPDATE submissions SET volunteer_name = ${next.name}
             WHERE volunteer_name = ${cur.name}`
@@ -336,20 +335,19 @@ export function createPostgresStore(connectionString) {
   async function addAttendees(eventId, names) {
     await ensureReady();
     if (!(await eventRowById(eventId))) return null;
-    // Dedupe: a single INSERT ... ON CONFLICT can't touch the same conflict
-    // target twice (SQLSTATE 21000), so duplicate names in one request must
-    // collapse to one row (the flags set are constant, so nothing is lost).
+    // Pre-registering only puts volunteers on the list — it does NOT check them
+    // in (staff_checkin stays false / in sync with checkin_at). Dedupe because a
+    // single INSERT ... ON CONFLICT can't touch the same conflict target twice.
     const clean = [...new Set(names.filter((n) => typeof n === "string" && n.trim()))];
     if (clean.length > 0) {
       await sql`
         INSERT INTO attendance (event_id, volunteer_id, volunteer_name, staff_checkin, volunteer_checkout, self_added)
         SELECT ${eventId},
                (SELECT id FROM volunteers WHERE name = n.name ORDER BY created_at LIMIT 1),
-               n.name, true, false, false
+               n.name, false, false, false
         FROM unnest(${clean}::text[]) AS n(name)
         ON CONFLICT (event_id, volunteer_name) DO UPDATE
-          SET staff_checkin = true,
-              self_added = false,
+          SET self_added = false,
               volunteer_id = COALESCE(attendance.volunteer_id, EXCLUDED.volunteer_id)`;
     }
     return getEvent(eventId);
@@ -414,35 +412,40 @@ export function createPostgresStore(connectionString) {
     await ensureReady();
     if (!isUuid(eventId)) return null;
 
-    // Compute overrides in JS so this is a SINGLE atomic UPDATE (no
-    // read-modify-write that a concurrent scan could clobber). null override =>
-    // keep the current column value via COALESCE. Providing a non-null
-    // timestamp also marks that side checked ("setting a time marks it").
-    let staffOverride = null;
-    if (typeof patch.staffCheckin === "boolean") staffOverride = patch.staffCheckin;
-    else if ("checkinAt" in patch && patch.checkinAt != null) staffOverride = true;
-
-    let checkoutOverride = null;
-    if (typeof patch.volunteerCheckout === "boolean")
-      checkoutOverride = patch.volunteerCheckout;
-    else if ("checkoutAt" in patch && patch.checkoutAt != null) checkoutOverride = true;
-
+    // Keep the boolean flag and its timestamp in lock-step (single atomic
+    // UPDATE, no read-modify-write): an explicit checkinAt sets the time and the
+    // flag = (time != null); toggling the flag on stamps the time (now if none),
+    // toggling off CLEARS the time. Symmetric for check-out. This guarantees the
+    // derived hours (from timestamps) never disagree with the "confirmed" flags.
     const checkinProvided = "checkinAt" in patch;
     const checkinVal = checkinProvided ? patch.checkinAt ?? null : null;
+    const staffProvided = typeof patch.staffCheckin === "boolean";
+    const staffVal = staffProvided ? patch.staffCheckin : null;
+
     const checkoutProvided = "checkoutAt" in patch;
     const checkoutVal = checkoutProvided ? patch.checkoutAt ?? null : null;
+    const coProvided = typeof patch.volunteerCheckout === "boolean";
+    const coVal = coProvided ? patch.volunteerCheckout : null;
 
     const rows = await sql`
       UPDATE attendance SET
-        staff_checkin = COALESCE(${staffOverride}::boolean, staff_checkin),
-        volunteer_checkout = COALESCE(${checkoutOverride}::boolean, volunteer_checkout),
+        staff_checkin = CASE
+          WHEN ${checkinProvided}::boolean THEN (${checkinVal}::timestamptz IS NOT NULL)
+          WHEN ${staffProvided}::boolean THEN ${staffVal}::boolean
+          ELSE staff_checkin END,
         checkin_at = CASE
           WHEN ${checkinProvided}::boolean THEN ${checkinVal}::timestamptz
-          WHEN COALESCE(${staffOverride}::boolean, staff_checkin) AND checkin_at IS NULL THEN now()
+          WHEN ${staffProvided}::boolean AND ${staffVal}::boolean THEN COALESCE(checkin_at, now())
+          WHEN ${staffProvided}::boolean THEN NULL
           ELSE checkin_at END,
+        volunteer_checkout = CASE
+          WHEN ${checkoutProvided}::boolean THEN (${checkoutVal}::timestamptz IS NOT NULL)
+          WHEN ${coProvided}::boolean THEN ${coVal}::boolean
+          ELSE volunteer_checkout END,
         checkout_at = CASE
           WHEN ${checkoutProvided}::boolean THEN ${checkoutVal}::timestamptz
-          WHEN COALESCE(${checkoutOverride}::boolean, volunteer_checkout) AND checkout_at IS NULL THEN now()
+          WHEN ${coProvided}::boolean AND ${coVal}::boolean THEN COALESCE(checkout_at, now())
+          WHEN ${coProvided}::boolean THEN NULL
           ELSE checkout_at END
       WHERE event_id = ${eventId} AND volunteer_name = ${volunteerName}
       RETURNING id`;

@@ -2,7 +2,26 @@
 
 Single source of truth for the project's current state. Last updated: 2026-07-10.
 
-## What just landed (this change)
+## Round 2 (latest) — hours from check-in/out, tab nav, mobile
+
+Deployed + verified on prod. Changes on top of the QR feature below:
+
+- **Service hours are now DERIVED from attendance check-in/out times**
+  (`hours = checkout − checkin`, rounded 0.25, sign-in/out HH:MM in `CHAPTER_TZ`).
+  `reconcileSubmission` (both stores) upserts/deletes the derived submission
+  after every attendance mutation. The public "Log Volunteer Hours" form + button
+  + `POST /submissions` are removed.
+- **Bug fixed:** deleting an event / removing a volunteer deletes the derived
+  hours, so no stuck "pending" badge. Volunteer **grade** is editable + reflected
+  on the roster.
+- **Admin tab nav:** sticky Roster · Volunteers · Events (no scrolling).
+- **Mobile/iPad:** tables collapse columns on small screens, bottom-sheet modals,
+  thumb-sized tabs. (Live mobile screenshotting was unavailable — the Chrome
+  extension was disconnected — verify on-device.)
+- Green: server 39, live Neon parity 39, client 25, build clean. Prod verified:
+  hours=3 from 09:00→12:00, delete clears hours, form gone (404).
+
+## What just landed (round 1)
 
 A large feature + storage migration, built, audited, code-reviewed, and verified:
 

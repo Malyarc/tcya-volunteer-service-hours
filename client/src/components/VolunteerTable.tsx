@@ -163,7 +163,6 @@ function FragmentRow({
               {/* On mobile, surface grade here since its column is hidden. */}
               <div className="text-xs text-slate-500 sm:hidden">
                 {v.latestGrade !== "—" ? `Grade ${v.latestGrade}` : ""}
-                {v.pendingCount > 0 ? ` · ${v.pendingCount} pending` : ""}
               </div>
             </div>
           </div>
@@ -173,14 +172,6 @@ function FragmentRow({
         </td>
         <td className="hidden whitespace-nowrap px-4 py-3 text-sm text-slate-600 md:table-cell">
           {v.submissions.length}
-          {v.pendingCount > 0 && (
-            <span
-              className="ml-2 badge bg-amber-100 text-amber-800"
-              title="Checked in but not yet checked out"
-            >
-              {v.pendingCount} pending
-            </span>
-          )}
         </td>
         <td className="whitespace-nowrap px-4 py-3 text-right">
           <span

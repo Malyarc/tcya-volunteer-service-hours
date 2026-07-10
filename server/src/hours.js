@@ -35,8 +35,12 @@ export function localHHMM(iso, tz = CHAPTER_TZ) {
   }
 }
 
-// Whether an attendance row represents completed service (both timestamps set,
-// checkout after checkin).
+// Whether an attendance row represents completed service: both timestamps set,
+// checkout strictly after check-in. This gates whether a derived submission
+// exists — kept SEPARATE from the rounded `hoursBetween` value so a genuinely
+// complete-but-brief (< 7.5 min) row still yields a submission (with 0 hours)
+// rather than vanishing.
 export function isComplete(checkinAt, checkoutAt) {
-  return hoursBetween(checkinAt, checkoutAt) > 0;
+  if (!checkinAt || !checkoutAt) return false;
+  return Date.parse(checkoutAt) > Date.parse(checkinAt);
 }

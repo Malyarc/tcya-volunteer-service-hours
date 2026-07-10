@@ -9,7 +9,7 @@
 import crypto from "crypto";
 import { formatVolunteerCode } from "./schema.js";
 import { SEED_VOLUNTEERS } from "../data/seed-volunteers.js";
-import { hoursBetween, localHHMM } from "../hours.js";
+import { hoursBetween, localHHMM, isComplete } from "../hours.js";
 
 const nowIso = () => new Date().toISOString();
 
@@ -140,12 +140,18 @@ export function createMemoryStore(seed) {
     const idx = submissions.findIndex(
       (s) => s.eventId === eventId && s.volunteerName === volunteerName
     );
-    const hrs = row ? hoursBetween(row.checkinAt, row.checkoutAt) : 0;
-    if (!ev || !row || hrs <= 0) {
+    if (!ev || !row || !isComplete(row.checkinAt, row.checkoutAt)) {
       if (idx >= 0) submissions.splice(idx, 1);
       return;
     }
-    const vol = volunteers.find((v) => v.name === volunteerName);
+    const hrs = hoursBetween(row.checkinAt, row.checkoutAt);
+    // Deterministic pick on duplicate names (matches Postgres ORDER BY
+    // created_at LIMIT 1) so the derived grade never diverges between stores.
+    const vol = volunteers
+      .filter((v) => v.name === volunteerName)
+      .sort((a, b) =>
+        a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.code.localeCompare(b.code)
+      )[0];
     const fields = {
       grade: vol?.grade || "",
       eventName: ev.customName ? ev.customName : ev.name,
@@ -308,13 +314,14 @@ export function createMemoryStore(seed) {
   }
 
   async function deleteEvent(id) {
+    // Purge the event's submissions + attendance unconditionally (matches the
+    // Postgres store, which deletes by event_id regardless of whether the event
+    // row exists), so a deleted event never leaves orphaned "pending" rows.
+    submissions = submissions.filter((s) => s.eventId !== id);
+    attendance = attendance.filter((a) => a.eventId !== id);
     const idx = events.findIndex((x) => x.id === id);
     if (idx < 0) return false;
     events.splice(idx, 1);
-    attendance = attendance.filter((a) => a.eventId !== id); // CASCADE
-    // Delete this event's derived submissions too, so a deleted event leaves no
-    // orphaned "pending" rows in the roster.
-    submissions = submissions.filter((s) => s.eventId !== id);
     return true;
   }
 
@@ -322,11 +329,13 @@ export function createMemoryStore(seed) {
 
   async function addAttendees(eventId, names) {
     if (!events.find((e) => e.id === eventId)) return null;
+    // Pre-registering only puts volunteers on the list — it does NOT check them
+    // in. "Checked in" means having a check-in time (staffCheckin stays in sync
+    // with checkinAt), which happens via a QR scan or a manual time.
     const clean = [...new Set(names.filter((n) => typeof n === "string" && n.trim()))];
     for (const name of clean) {
       const existing = findAtt(eventId, name);
       if (existing) {
-        existing.staffCheckin = true;
         existing.selfAdded = false;
         if (!existing.volunteerId) existing.volunteerId = matchVolunteerId(name);
       } else {
@@ -334,7 +343,7 @@ export function createMemoryStore(seed) {
           eventId,
           volunteerId: matchVolunteerId(name),
           volunteerName: name,
-          staffCheckin: true,
+          staffCheckin: false,
           checkinAt: null,
           volunteerCheckout: false,
           checkoutAt: null,
@@ -417,26 +426,40 @@ export function createMemoryStore(seed) {
   async function patchAttendance(eventId, volunteerName, patch) {
     const row = findAtt(eventId, volunteerName);
     if (!row) return null;
-    // Providing a non-null timestamp also marks that side checked, matching the
-    // Postgres store and the editor's "setting a time marks it" contract.
+    // The boolean flag and the timestamp are kept in lock-step so hours (derived
+    // from timestamps) and the "confirmed" flags never disagree:
+    //   - an explicit checkinAt sets the time and the flag = (time != null);
+    //   - toggling the flag on stamps the time (now, if none); toggling off
+    //     CLEARS the time. Same for check-out.
+    let checkinAt = row.checkinAt;
     let staffCheckin = row.staffCheckin;
-    if (typeof patch.staffCheckin === "boolean") staffCheckin = patch.staffCheckin;
-    else if ("checkinAt" in patch && patch.checkinAt != null) staffCheckin = true;
+    if ("checkinAt" in patch) {
+      checkinAt = patch.checkinAt ?? null;
+      staffCheckin = checkinAt != null;
+    } else if (typeof patch.staffCheckin === "boolean") {
+      if (patch.staffCheckin) {
+        checkinAt = row.checkinAt || nowIso();
+        staffCheckin = true;
+      } else {
+        checkinAt = null;
+        staffCheckin = false;
+      }
+    }
+
+    let checkoutAt = row.checkoutAt;
     let volunteerCheckout = row.volunteerCheckout;
-    if (typeof patch.volunteerCheckout === "boolean")
-      volunteerCheckout = patch.volunteerCheckout;
-    else if ("checkoutAt" in patch && patch.checkoutAt != null)
-      volunteerCheckout = true;
-
-    let checkinAt;
-    if ("checkinAt" in patch) checkinAt = patch.checkinAt;
-    else if (staffCheckin && !row.checkinAt) checkinAt = nowIso();
-    else checkinAt = row.checkinAt;
-
-    let checkoutAt;
-    if ("checkoutAt" in patch) checkoutAt = patch.checkoutAt;
-    else if (volunteerCheckout && !row.checkoutAt) checkoutAt = nowIso();
-    else checkoutAt = row.checkoutAt;
+    if ("checkoutAt" in patch) {
+      checkoutAt = patch.checkoutAt ?? null;
+      volunteerCheckout = checkoutAt != null;
+    } else if (typeof patch.volunteerCheckout === "boolean") {
+      if (patch.volunteerCheckout) {
+        checkoutAt = row.checkoutAt || nowIso();
+        volunteerCheckout = true;
+      } else {
+        checkoutAt = null;
+        volunteerCheckout = false;
+      }
+    }
 
     row.staffCheckin = staffCheckin;
     row.volunteerCheckout = volunteerCheckout;

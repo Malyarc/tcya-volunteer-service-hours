@@ -166,7 +166,7 @@ export function EventDetailPage({
   async function handleDeleteEvent() {
     if (
       !window.confirm(
-        `Delete this event? Submissions linked to it will remain in the database but won't count toward hours.`
+        `Delete this event? Its attendance and the service-hour records derived from it will be permanently removed.`
       )
     )
       return;
@@ -241,9 +241,10 @@ export function EventDetailPage({
           <Stat label="Awaiting Staff" value={stats.onlyVol} tone="amber" />
         </div>
         <div className="border-t border-slate-100 px-6 py-2.5 text-xs text-slate-500">
-          <span className="font-semibold text-slate-600">Note:</span> confirming attendance
-          (both green) marks a volunteer present. Their <em>service hours</em> are credited
-          only once they also submit their arrival / end times via “Log Volunteer Hours.”
+          <span className="font-semibold text-slate-600">Note:</span> a volunteer's{" "}
+          <em>service hours</em> are credited automatically from their check-in and
+          check-out times (hours = check-out − check-in). Scan their QR or set the
+          times by hand below.
         </div>
       </div>
 
@@ -338,8 +339,8 @@ export function EventDetailPage({
                 Attendance List
               </h2>
               <p className="text-xs text-slate-500">
-                Toggle a status or edit check-in / out times. Both green =
-                attendance confirmed (hours also need the volunteer's submitted times).
+                Tap a check to stamp / clear that time, or edit the times directly.
+                Both times set ⇒ hours are credited (check-out − check-in).
               </p>
             </div>
             <button
