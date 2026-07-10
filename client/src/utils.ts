@@ -1,5 +1,18 @@
 import type { Submission, VolunteerEvent } from "./types";
 
+// Today's date as a local YYYY-MM-DD. Using `new Date().toISOString()` would
+// yield the UTC date, which is already "tomorrow" for US timezones in the
+// evening — that mis-labels a same-day event as "Past" and defaults new-event
+// forms to the wrong day. Event dates are local calendar dates, so compare
+// against the local date.
+export function todayYmd(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 export function formatHours(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
   return value.toFixed(2).replace(/\.00$/, "").replace(/(\.[1-9])0$/, "$1");
@@ -81,6 +94,30 @@ export interface VolunteerSummary {
   pendingCount: number;
 }
 
+// Collapse a volunteer's submissions to one per event (keeping the most
+// recently submitted), so duplicate submissions for the same event never
+// double-count. This is the read-side guard that mirrors the server's upsert:
+// even if legacy duplicate rows exist in storage (from before the upsert was
+// added), the displayed / exported / certified hours stay correct. The
+// attendance list holds a single row per volunteer per event, so a volunteer's
+// hours for one event are always a single logical entry. Rows without an
+// eventId (legacy, pre-event-model) are kept as-is.
+export function dedupeSubmissionsByEvent(subs: Submission[]): Submission[] {
+  const byEvent = new Map<string, Submission>();
+  const noEvent: Submission[] = [];
+  for (const s of subs) {
+    if (!s.eventId) {
+      noEvent.push(s);
+      continue;
+    }
+    const cur = byEvent.get(s.eventId);
+    if (!cur || (s.submittedAt || "") > (cur.submittedAt || "")) {
+      byEvent.set(s.eventId, s);
+    }
+  }
+  return [...byEvent.values(), ...noEvent];
+}
+
 export function buildSummaries(
   volunteerNames: readonly string[],
   submissions: Submission[],
@@ -94,7 +131,8 @@ export function buildSummaries(
   }
 
   const summaries: VolunteerSummary[] = [];
-  for (const [name, items] of allByName.entries()) {
+  for (const [name, rawItems] of allByName.entries()) {
+    const items = dedupeSubmissionsByEvent(rawItems);
     const counted = items
       .filter((s) => isCountableSubmission(s, events))
       .sort((a, b) =>

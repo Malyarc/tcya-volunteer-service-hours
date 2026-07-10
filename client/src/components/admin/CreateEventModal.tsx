@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { EVENT_NAMES, OTHER_EVENT } from "../../data/events";
 import { createEvent } from "../../api";
 import type { VolunteerEvent } from "../../types";
+import { todayYmd } from "../../utils";
 
 interface Props {
   open: boolean;
@@ -20,7 +21,7 @@ export function CreateEventModal({ open, onClose, onCreated }: Props) {
     if (open) {
       setName("");
       setCustomName("");
-      setDate(new Date().toISOString().slice(0, 10));
+      setDate(todayYmd());
       setError(null);
     }
   }, [open]);

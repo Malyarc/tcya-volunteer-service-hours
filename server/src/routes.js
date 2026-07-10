@@ -23,8 +23,14 @@ function computeHours(arrivalTime, endTime) {
 
 function isValidTime(t) {
   if (typeof t !== "string" || !/^\d{2}:\d{2}$/.test(t)) return false;
-  // Times must be on a 15-minute boundary (:00, :15, :30, :45).
+  const hours = parseInt(t.slice(0, 2), 10);
   const minutes = parseInt(t.slice(3, 5), 10);
+  // Must be a real wall-clock time (00:00–23:59), on a 15-minute boundary
+  // (:00, :15, :30, :45). Without the range check the regex alone accepts
+  // impossible values like "99:45", letting a raw API call claim absurd
+  // hours (e.g. 00:00 → 99:45 computed to 99.75 hours). The <input type=time>
+  // on the client already constrains this; the server must too.
+  if (hours > 23 || minutes > 59) return false;
   return minutes % 15 === 0;
 }
 function isValidDate(d) {
@@ -125,10 +131,10 @@ export function createRouter({
         .json({ errors: ["Selected event no longer exists"] });
     }
 
-    const submission = {
-      id: crypto.randomUUID(),
+    const volunteerNameClean = volunteerName.trim();
+    const baseSubmission = {
       eventId,
-      volunteerName: volunteerName.trim(),
+      volunteerName: volunteerNameClean,
       grade: grade.trim(),
       eventName: event.customName ? event.customName : event.name,
       customEventName: event.customName || null,
@@ -141,20 +147,41 @@ export function createRouter({
     };
 
     try {
+      let savedSubmission;
       await writeData(async (current) => {
+        // Upsert: keep exactly one submission per (event, volunteer). The
+        // attendance list already holds a single row per volunteer per event,
+        // so a second submission for the same event must not create a second
+        // countable record — that double-counted the volunteer's hours.
+        // Re-submitting instead corrects the existing entry (fixed times,
+        // comments, or grade). Collapsing *all* prior matches (not just the
+        // first) also self-heals any duplicates that pre-date this rule.
+        const samePair = (s) =>
+          s.eventId === eventId && s.volunteerName === volunteerNameClean;
+        const prior = current.submissions.filter(samePair);
+        savedSubmission = {
+          ...baseSubmission,
+          // Preserve the earliest existing id so identity stays stable on edit.
+          id: prior[0]?.id ?? crypto.randomUUID(),
+        };
+        const submissions = [
+          ...current.submissions.filter((s) => !samePair(s)),
+          savedSubmission,
+        ];
+
         const updatedEvents = current.events.map((e) => {
           if (e.id !== eventId) return e;
           const attendance = Array.isArray(e.attendance)
             ? [...e.attendance]
             : [];
           const idx = attendance.findIndex(
-            (a) => a.volunteerName === submission.volunteerName
+            (a) => a.volunteerName === volunteerNameClean
           );
           if (idx >= 0) {
             attendance[idx] = { ...attendance[idx], volunteerCheckout: true };
           } else {
             attendance.push({
-              volunteerName: submission.volunteerName,
+              volunteerName: volunteerNameClean,
               staffCheckin: false,
               volunteerCheckout: true,
               selfAdded: true,
@@ -162,13 +189,9 @@ export function createRouter({
           }
           return { ...e, attendance };
         });
-        return {
-          ...current,
-          submissions: [...current.submissions, submission],
-          events: updatedEvents,
-        };
+        return { ...current, submissions, events: updatedEvents };
       });
-      res.status(201).json({ submission });
+      res.status(201).json({ submission: savedSubmission });
     } catch (err) {
       console.error("Failed to save submission", err);
       res.status(500).json({ error: "Failed to save submission" });
