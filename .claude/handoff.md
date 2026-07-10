@@ -2,7 +2,36 @@
 
 Single source of truth for the project's current state. Last updated: 2026-07-10.
 
-## Round 2 (latest) — hours from check-in/out, tab nav, mobile
+## Round 3 (latest) — from-scratch code-review, security + a11y + tests
+
+Full multi-agent review of everything, findings applied, re-verified, deployed.
+
+- **Security — public reads tightened:** `GET /submissions` is now admin-gated.
+  Public callers get a projection WITHOUT minors' exact check-in/out clock times,
+  free-text comments, or internal submit timestamps (mirrors `publicEvent()` on
+  `/events`). Admins still get full rows for the Excel export + attendance detail.
+- **Volunteer certificate reachable on mobile:** the cumulative "Download
+  certificate" button now shows in the expanded roster row on phones (its desktop
+  column is hidden below `sm`). Non-admins no longer see Sign In/Out/Comments
+  columns (those fields are stripped server-side; `isAdmin` threads through
+  `VolunteerTable`).
+- **Import parity fix:** Postgres `importAll` now skips a duplicate event id
+  entirely (including its attendance), matching the memory store — a dup id can no
+  longer smuggle in new attendance rows.
+- **Accessibility:** Events + roster rows are keyboard-activatable (Enter/Space,
+  visible focus ring) and their handlers ignore keys bubbling from nested buttons;
+  `role="dialog"`/`aria-modal`/`aria-labelledby` on the login + create-event modals.
+- **Scanner (iOS):** the AudioContext is unlocked on the first tap anywhere in the
+  scanner, so a check-in-only session (default mode, no mode-button tap) still
+  beeps on iPhone/iPad.
+- **Tests:** added `server/test/hours.test.js` (14 unit tests: 0.25h rounding +
+  PST/PDT/EDT/UTC/midnight/invalid-tz for `localHHMM`, `isComplete` decoupling) and
+  reconcile-edge + public-projection behavioral tests in the shared suite.
+- **Green:** server memory **58 pass**, **live Neon parity 43 pass**, client build
+  clean. Prod verified: public roster (90, name+grade only), admin login + full-PII
+  `/volunteers`, events 200. Prod DB left pristine (90 roster, 0 events).
+
+## Round 2 — hours from check-in/out, tab nav, mobile
 
 Deployed + verified on prod. Changes on top of the QR feature below:
 

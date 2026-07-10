@@ -65,6 +65,8 @@ npm run build --prefix client   # tsc -b && vite build
 ```
 
 - `server/test/suite.js` — the shared behavioral suite (run against both stores).
+- `server/test/hours.test.js` — pure unit tests for the hours-derivation helpers
+  (0.25h rounding, `isComplete` decoupling, `localHHMM` timezone/DST edge cases).
 - `server/test/routes.test.js` — runs the suite on the in-memory store + a
   fail-closed-admin test.
 - `server/test/store-parity.test.js` — runs the SAME suite against **live
