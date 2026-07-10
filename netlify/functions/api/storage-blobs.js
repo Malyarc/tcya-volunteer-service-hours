@@ -2,22 +2,26 @@
 // document is stored under one key — same shape, same schema, just persisted
 // in Netlify's managed key/value store instead of a local file.
 //
-// CONSISTENCY (critical): Netlify Blobs reads default to *eventual*
-// consistency, meaning a read that immediately follows a write can return a
-// stale snapshot. Because this app does read-modify-write on a single
-// document across separate serverless invocations, that default caused a
-// real bug: creating an event and then adding a volunteer to it (two quick
-// admin actions, two invocations) — the second invocation's read did not yet
-// see the just-created event, so the API answered "Event not found" /
-// "Selected event no longer exists". We therefore open the store in STRONG
-// consistency mode, which guarantees read-after-write.
+// CONSISTENCY: Netlify Blobs reads default to *eventual* consistency, so a
+// read that immediately follows a write can return a stale snapshot. Because
+// this app does read-modify-write on a single document across separate
+// serverless invocations, that lag caused the reported bug: create an event,
+// then add a volunteer to it, and the second invocation's read didn't yet see
+// the just-created event ("Event not found" / "Selected event no longer
+// exists").
 //
-// NOTE on concurrent writes: strong consistency fixes stale reads but this
-// API version (@netlify/blobs v8) has no compare-and-swap, so two writes that
-// interleave within a single read-modify-write window can still last-writer-
-// win. For a small chapter's submission volume this is acceptable; if
-// simultaneous writes ever become common, move to per-key storage (one blob
-// per event / per submission) so independent writes never contend.
+// We must NOT fix this with `getStore({ consistency: "strong" })`: this
+// function runs via connectLambda (Lambda-compat / serverless-http), and
+// connectLambda only injects edgeURL/siteID/token — NOT the `uncachedEdgeURL`
+// that strong-consistency reads require. Requesting strong consistency makes
+// every read throw ("...the environment has not been configured with a
+// 'uncachedEdgeURL' property"), which 500s the entire API.
+//
+// So reads stay eventual. To keep the create-event → add-volunteer flow
+// reliable, the event-lookup handlers in routes.js retry the read a few times
+// (via writeWithConsistencyRetry) — a backend-agnostic mitigation that needs
+// no special Blobs configuration and is a no-op on the strongly-consistent
+// EC2 file store.
 
 import { getStore } from "@netlify/blobs";
 
@@ -27,7 +31,7 @@ export function createBlobsStorage(storeName, key) {
   // and that context is only available *after* connectLambda(event) has
   // been called for the current invocation (see api.mjs).
   function store() {
-    return getStore({ name: storeName, consistency: "strong" });
+    return getStore(storeName);
   }
 
   async function readData() {

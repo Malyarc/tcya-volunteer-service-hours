@@ -22,19 +22,56 @@ function createMemoryStorage(seed) {
       return data;
     },
     writeData(updater) {
-      queue = queue.then(async () => {
+      const run = queue.then(async () => {
         data = await updater(data);
         return data;
       });
-      return queue;
+      queue = run.catch(() => {}); // keep the queue alive if an updater aborts
+      return run;
     },
     _dump: () => data,
   };
 }
 
+// Storage that simulates Netlify Blobs eventual consistency: setJSON writes a
+// strongly-consistent primary, but reads return a snapshot that trails the
+// primary for `lagReads` reads after each write. Used to prove the create-event
+// → add-volunteer flow tolerates the lag AND never clobbers the new event.
+function createLaggyStorage(lagReads) {
+  let primary = { submissions: [], events: [] };
+  let visible = primary;
+  let staleReadsLeft = 0;
+  let queue = Promise.resolve();
+
+  async function readData() {
+    if (staleReadsLeft > 0) {
+      staleReadsLeft -= 1;
+      return visible; // still trailing the primary
+    }
+    visible = primary; // caught up
+    return visible;
+  }
+
+  function writeData(updater) {
+    const run = queue.then(async () => {
+      const current = await readData(); // laggy read, like storage-blobs
+      const next = await updater(current); // may throw (abort) → primary intact
+      primary = next; // strongly-consistent primary write
+      staleReadsLeft = lagReads; // reads trail the new primary again
+      return next;
+    });
+    queue = run.catch(() => {});
+    return run;
+  }
+  return { readData, writeData, _dump: () => primary };
+}
+
 // Boot the router on an ephemeral port and hand the test a small client.
 async function withServer(seed, run) {
-  const storage = createMemoryStorage(seed);
+  return withStorageServer(createMemoryStorage(seed), run);
+}
+
+async function withStorageServer(storage, run) {
   const app = express();
   app.use(express.json({ limit: "200kb" }));
   app.use(
@@ -147,6 +184,51 @@ test("create event then add a volunteer to it works", async () => {
     assert.equal(added.body.attendance[0].volunteerName, "Aaron Tse");
     assert.equal(added.body.attendance[0].staffCheckin, true);
     assert.equal(added.body.attendance[0].volunteerCheckout, false);
+  });
+});
+
+test("tolerates eventual-consistency lag when adding a volunteer to a fresh event", async () => {
+  // Reads trail writes by 2, so the attendance handler's first reads won't see
+  // the just-created event — it must retry, and must NOT write the stale
+  // snapshot back (which would delete the event).
+  await withStorageServer(createLaggyStorage(2), async (api) => {
+    const auth = await adminToken(api);
+    const event = await makeEvent(api, auth);
+    const added = await api.send(
+      "POST",
+      `/api/events/${event.id}/attendance`,
+      { volunteerNames: ["Aaron Tse"] },
+      auth
+    );
+    // Handler return is authoritative (a GET would itself be laggy).
+    assert.equal(added.status, 200, JSON.stringify(added.body));
+    assert.equal(added.body.attendance.length, 1);
+    assert.equal(added.body.attendance[0].volunteerName, "Aaron Tse");
+    // The event was not clobbered: the primary store still holds it, now with
+    // the attendee.
+    const primary = api.dump();
+    assert.equal(primary.events.length, 1);
+    assert.equal(primary.events[0].id, event.id);
+    assert.equal(primary.events[0].attendance.length, 1);
+  });
+});
+
+test("tolerates eventual-consistency lag when submitting for a fresh event", async () => {
+  await withStorageServer(createLaggyStorage(2), async (api) => {
+    const auth = await adminToken(api);
+    const event = await makeEvent(api, auth);
+    const r = await api.send("POST", "/api/submissions", {
+      eventId: event.id,
+      volunteerName: "Aaron Tse",
+      grade: "10th",
+      arrivalTime: "09:00",
+      endTime: "12:15",
+    });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(r.body.submission.hours, 3.25);
+    const primary = api.dump();
+    assert.equal(primary.events.length, 1, "event must not be clobbered");
+    assert.equal(primary.submissions.length, 1);
   });
 });
 

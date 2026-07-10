@@ -37,7 +37,7 @@ export function createFileStorage(dataFile) {
   }
 
   function writeData(updater) {
-    writeQueue = writeQueue.then(async () => {
+    const run = writeQueue.then(async () => {
       const current = await readData();
       const next = await updater(current);
       const tmp = dataFile + ".tmp";
@@ -45,7 +45,11 @@ export function createFileStorage(dataFile) {
       await fs.rename(tmp, dataFile);
       return next;
     });
-    return writeQueue;
+    // Keep the serialized queue alive even if this write rejects (e.g. the
+    // updater aborts to retry) so later writes still run; the rejection is
+    // still surfaced to *this* caller via the returned promise.
+    writeQueue = run.catch(() => {});
+    return run;
   }
 
   return { readData, writeData };

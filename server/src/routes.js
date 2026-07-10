@@ -37,6 +37,47 @@ function isValidDate(d) {
   return typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Netlify Blobs reads are eventually consistent (and strong consistency is not
+// available under connectLambda — see netlify/functions/api/storage-blobs.js),
+// so an event created in a just-prior request may not be visible on the first
+// read. Retry the read-modify-write until `attempt` reports it found what it
+// needed. `attempt(current)` returns { next, value } to commit, or null when
+// the target isn't visible yet.
+//
+// Critically, when the target isn't visible we ABORT the write (throw) rather
+// than persisting `current`: writeData does read-modify-write, so writing back
+// a stale snapshot would clobber the very event we're waiting for (last-writer-
+// wins) and it would never appear. Throwing skips the persist entirely.
+//
+// Resolves to the found `value`, or null if it never appeared. On the strongly-
+// consistent EC2 file store the first attempt always succeeds — no added
+// latency, no retries.
+const CONSISTENCY_RETRIES = 6;
+const CONSISTENCY_DELAY_MS = 250;
+const NOT_VISIBLE_YET = Symbol("consistency-target-not-visible-yet");
+
+async function writeWithConsistencyRetry(writeData, attempt) {
+  for (let i = 0; i < CONSISTENCY_RETRIES; i += 1) {
+    if (i > 0) await sleep(CONSISTENCY_DELAY_MS);
+    try {
+      let value = null;
+      await writeData(async (current) => {
+        const result = attempt(current);
+        if (!result) throw NOT_VISIBLE_YET; // abort write, no clobber, then retry
+        value = result.value;
+        return result.next;
+      });
+      return value;
+    } catch (err) {
+      if (err === NOT_VISIBLE_YET) continue;
+      throw err;
+    }
+  }
+  return null;
+}
+
 export function createRouter({
   readData,
   writeData,
@@ -123,74 +164,86 @@ export function createRouter({
 
     if (errors.length > 0) return res.status(400).json({ errors });
 
-    const data = await readData();
-    const event = data.events.find((e) => e.id === eventId);
-    if (!event) {
-      return res
-        .status(400)
-        .json({ errors: ["Selected event no longer exists"] });
-    }
-
     const volunteerNameClean = volunteerName.trim();
-    const baseSubmission = {
-      eventId,
-      volunteerName: volunteerNameClean,
-      grade: grade.trim(),
-      eventName: event.customName ? event.customName : event.name,
-      customEventName: event.customName || null,
-      eventDate: event.date,
-      arrivalTime,
-      endTime,
-      hours,
-      comments: typeof comments === "string" ? comments.trim() : "",
-      submittedAt: new Date().toISOString(),
-    };
 
     try {
-      let savedSubmission;
-      await writeData(async (current) => {
-        // Upsert: keep exactly one submission per (event, volunteer). The
-        // attendance list already holds a single row per volunteer per event,
-        // so a second submission for the same event must not create a second
-        // countable record — that double-counted the volunteer's hours.
-        // Re-submitting instead corrects the existing entry (fixed times,
-        // comments, or grade). Collapsing *all* prior matches (not just the
-        // first) also self-heals any duplicates that pre-date this rule.
-        const samePair = (s) =>
-          s.eventId === eventId && s.volunteerName === volunteerNameClean;
-        const prior = current.submissions.filter(samePair);
-        savedSubmission = {
-          ...baseSubmission,
-          // Preserve the earliest existing id so identity stays stable on edit.
-          id: prior[0]?.id ?? crypto.randomUUID(),
-        };
-        const submissions = [
-          ...current.submissions.filter((s) => !samePair(s)),
-          savedSubmission,
-        ];
+      const savedSubmission = await writeWithConsistencyRetry(
+        writeData,
+        (current) => {
+          // The event may have been created moments ago in a separate request;
+          // under Netlify Blobs' eventual consistency it might not be visible
+          // yet. Returning null retries the read until it appears.
+          const event = current.events.find((e) => e.id === eventId);
+          if (!event) return null;
 
-        const updatedEvents = current.events.map((e) => {
-          if (e.id !== eventId) return e;
-          const attendance = Array.isArray(e.attendance)
-            ? [...e.attendance]
-            : [];
-          const idx = attendance.findIndex(
-            (a) => a.volunteerName === volunteerNameClean
-          );
-          if (idx >= 0) {
-            attendance[idx] = { ...attendance[idx], volunteerCheckout: true };
-          } else {
-            attendance.push({
-              volunteerName: volunteerNameClean,
-              staffCheckin: false,
-              volunteerCheckout: true,
-              selfAdded: true,
-            });
-          }
-          return { ...e, attendance };
-        });
-        return { ...current, submissions, events: updatedEvents };
-      });
+          // Upsert: keep exactly one submission per (event, volunteer). The
+          // attendance list holds a single row per volunteer per event, so a
+          // second submission for the same event must not create a second
+          // countable record — that double-counted hours. Re-submitting
+          // corrects the existing entry; collapsing *all* prior matches also
+          // self-heals duplicates that pre-date this rule.
+          const samePair = (s) =>
+            s.eventId === eventId && s.volunteerName === volunteerNameClean;
+          const prior = current.submissions.filter(samePair);
+
+          const submission = {
+            // Preserve the earliest existing id so a correction updates the
+            // same row instead of duplicating it.
+            id: prior[0]?.id ?? crypto.randomUUID(),
+            eventId,
+            volunteerName: volunteerNameClean,
+            grade: grade.trim(),
+            eventName: event.customName ? event.customName : event.name,
+            customEventName: event.customName || null,
+            eventDate: event.date,
+            arrivalTime,
+            endTime,
+            hours,
+            comments: typeof comments === "string" ? comments.trim() : "",
+            submittedAt: new Date().toISOString(),
+          };
+
+          const submissions = [
+            ...current.submissions.filter((s) => !samePair(s)),
+            submission,
+          ];
+
+          const events = current.events.map((e) => {
+            if (e.id !== eventId) return e;
+            const attendance = Array.isArray(e.attendance)
+              ? [...e.attendance]
+              : [];
+            const idx = attendance.findIndex(
+              (a) => a.volunteerName === volunteerNameClean
+            );
+            if (idx >= 0) {
+              attendance[idx] = {
+                ...attendance[idx],
+                volunteerCheckout: true,
+              };
+            } else {
+              attendance.push({
+                volunteerName: volunteerNameClean,
+                staffCheckin: false,
+                volunteerCheckout: true,
+                selfAdded: true,
+              });
+            }
+            return { ...e, attendance };
+          });
+
+          return {
+            next: { ...current, submissions, events },
+            value: submission,
+          };
+        }
+      );
+
+      if (!savedSubmission) {
+        return res
+          .status(400)
+          .json({ errors: ["Selected event no longer exists"] });
+      }
       res.status(201).json({ submission: savedSubmission });
     } catch (err) {
       console.error("Failed to save submission", err);
@@ -257,8 +310,12 @@ export function createRouter({
       return res.status(400).json({ error: "volunteerNames must be an array" });
     }
 
-    let updatedEvent = null;
-    await writeData(async (current) => {
+    // The event is often created in the immediately-preceding request; under
+    // Netlify Blobs' eventual consistency it may not be visible on the first
+    // read, so retry until it appears (this is the reported "event does not
+    // exist" flow: create event → add volunteers).
+    const updatedEvent = await writeWithConsistencyRetry(writeData, (current) => {
+      if (!current.events.some((e) => e.id === id)) return null;
       const events = current.events.map((e) => {
         if (e.id !== id) return e;
         const map = new Map();
@@ -281,11 +338,9 @@ export function createRouter({
             });
           }
         }
-        const updated = { ...e, attendance: Array.from(map.values()) };
-        updatedEvent = updated;
-        return updated;
+        return { ...e, attendance: Array.from(map.values()) };
       });
-      return { ...current, events };
+      return { next: { ...current, events }, value: events.find((e) => e.id === id) };
     });
 
     if (!updatedEvent)
