@@ -291,7 +291,7 @@ export function createMemoryStore(seed) {
       .sort(
         (a, b) =>
           (a.date < b.date ? 1 : a.date > b.date ? -1 : 0) ||
-          (a.createdAt < b.createdAt ? 1 : -1)
+          (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0)
       )
       .map(assembleEvent);
   }
@@ -483,7 +483,7 @@ export function createMemoryStore(seed) {
 
   async function listSubmissions() {
     return [...submissions]
-      .sort((a, b) => (a.submittedAt < b.submittedAt ? -1 : 1))
+      .sort((a, b) => (a.submittedAt < b.submittedAt ? -1 : a.submittedAt > b.submittedAt ? 1 : 0))
       .map((s) => ({ ...s }));
   }
 

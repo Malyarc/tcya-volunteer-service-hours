@@ -548,9 +548,16 @@ export function createPostgresStore(connectionString) {
       );
     }
 
+    // Skip a duplicate event id entirely — including its attendance — so a
+    // second event sharing an id can't smuggle new attendance rows onto the
+    // first. (The memory store `continue`s the whole event; mirror it here so
+    // ON CONFLICT on attendance doesn't diverge from memory's behavior.)
+    const seenEventIds = new Set();
     for (const e of events) {
       if (!e || typeof e !== "object") continue;
       const eid = isUuid(e.id) ? e.id : crypto.randomUUID();
+      if (seenEventIds.has(eid)) continue;
+      seenEventIds.add(eid);
       stmts.push(sql`
         INSERT INTO events (id, name, custom_name, date, created_at)
         VALUES (${eid}, ${e.name || ""}, ${e.customName ?? null}, ${e.date || ""}, ${e.createdAt || new Date().toISOString()})

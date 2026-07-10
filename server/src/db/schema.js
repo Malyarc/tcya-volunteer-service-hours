@@ -81,6 +81,9 @@ export const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS submissions_event_idx ON submissions (event_id)`,
   `CREATE INDEX IF NOT EXISTS submissions_volunteer_idx ON submissions (volunteer_name)`,
   `CREATE INDEX IF NOT EXISTS volunteers_name_idx ON volunteers (lower(name))`,
+  // Exact-name lookups (reconcile, addAttendees, attendance upserts run one on
+  // every attendance mutation) can't use the lower(name) functional index.
+  `CREATE INDEX IF NOT EXISTS volunteers_name_exact_idx ON volunteers (name)`,
 ];
 
 // A stable, arbitrary key for the transaction-scoped advisory lock that

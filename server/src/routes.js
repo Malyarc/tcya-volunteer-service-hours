@@ -275,9 +275,27 @@ export function createRouter({
 
   // ---------- Submissions ----------
 
-  router.get("/submissions", async (_req, res) => {
+  router.get("/submissions", async (req, res) => {
     try {
-      res.json(await store.listSubmissions());
+      const subs = await store.listSubmissions();
+      // Admins see full rows (needed for the Excel export + attendance detail).
+      // Public callers get a projection WITHOUT the exact check-in/out clock
+      // times or free-text comments — those are the same internal details
+      // publicEvent() strips from /events, and this data is about minors.
+      res.json(
+        isAdminRequest(req)
+          ? subs
+          : subs.map((s) => ({
+              id: s.id,
+              eventId: s.eventId,
+              volunteerName: s.volunteerName,
+              grade: s.grade,
+              eventName: s.eventName,
+              customEventName: s.customEventName,
+              eventDate: s.eventDate,
+              hours: s.hours,
+            }))
+      );
     } catch (err) {
       console.error("Failed to read submissions", err);
       res.status(500).json({ error: "Failed to read submissions" });
@@ -364,10 +382,17 @@ export function createRouter({
     if (typeof staffCheckin === "boolean") patch.staffCheckin = staffCheckin;
     if (typeof volunteerCheckout === "boolean")
       patch.volunteerCheckout = volunteerCheckout;
-    // Manual time edits: a present key sets the value (ISO or null); an absent
-    // key leaves it untouched.
-    if ("checkinAt" in body) patch.checkinAt = normalizeIsoOrNull(body.checkinAt) ?? null;
-    if ("checkoutAt" in body) patch.checkoutAt = normalizeIsoOrNull(body.checkoutAt) ?? null;
+    // Manual time edits: a present key sets the value (valid ISO, or null to
+    // clear). An UNPARSEABLE value is ignored (not coerced to null) so a bad
+    // request can never silently wipe a real check-in/out time.
+    if ("checkinAt" in body) {
+      const v = normalizeIsoOrNull(body.checkinAt);
+      if (v !== undefined) patch.checkinAt = v;
+    }
+    if ("checkoutAt" in body) {
+      const v = normalizeIsoOrNull(body.checkoutAt);
+      if (v !== undefined) patch.checkoutAt = v;
+    }
 
     try {
       const event = await store.patchAttendance(
@@ -480,7 +505,10 @@ export function createRouter({
       const ids = new Set();
       for (const v of body.volunteers) {
         if (!v || typeof v !== "object") continue;
-        if (typeof v.code === "string") {
+        if (typeof v.code !== "string" || !v.code.trim()) {
+          return res.status(400).json({ error: "Every imported volunteer must have a code" });
+        }
+        {
           if (codes.has(v.code))
             return res.status(400).json({ error: `Duplicate volunteer code in import: ${v.code}` });
           codes.add(v.code);

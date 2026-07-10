@@ -40,7 +40,10 @@ export function EventDetailPage({
   const [scannerOpen, setScannerOpen] = useState(false);
   const [editingRow, setEditingRow] = useState<string | null>(null);
 
-  const { staff, selfAdded } = useMemo(() => sortAttendance(event), [event]);
+  const attendees = useMemo(() => {
+    const { staff, selfAdded } = sortAttendance(event);
+    return [...staff, ...selfAdded];
+  }, [event]);
 
   const availableVolunteers = useMemo(() => {
     const inList = new Set(event.attendance.map((a) => a.volunteerName));
@@ -52,16 +55,14 @@ export function EventDetailPage({
 
   const stats = useMemo(() => {
     const total = event.attendance.length;
-    const both = event.attendance.filter(
+    const completed = event.attendance.filter(
       (a) => a.staffCheckin && a.volunteerCheckout
     ).length;
-    const onlyStaff = event.attendance.filter(
+    const inProgress = event.attendance.filter(
       (a) => a.staffCheckin && !a.volunteerCheckout
     ).length;
-    const onlyVol = event.attendance.filter(
-      (a) => !a.staffCheckin && a.volunteerCheckout
-    ).length;
-    return { total, both, onlyStaff, onlyVol };
+    const notIn = event.attendance.filter((a) => !a.staffCheckin).length;
+    return { total, completed, inProgress, notIn };
   }, [event.attendance]);
 
   function togglePick(name: string) {
@@ -235,10 +236,10 @@ export function EventDetailPage({
         </div>
 
         <div className="grid grid-cols-2 gap-3 px-6 py-4 sm:grid-cols-4">
-          <Stat label="Total Attendees" value={stats.total} />
-          <Stat label="Attendance Confirmed" value={stats.both} tone="green" />
-          <Stat label="Awaiting Volunteer" value={stats.onlyStaff} />
-          <Stat label="Awaiting Staff" value={stats.onlyVol} tone="amber" />
+          <Stat label="On the List" value={stats.total} />
+          <Stat label="Completed" value={stats.completed} tone="green" />
+          <Stat label="Checked In" value={stats.inProgress} />
+          <Stat label="Not Checked In" value={stats.notIn} tone="amber" />
         </div>
         <div className="border-t border-slate-100 px-6 py-2.5 text-xs text-slate-500">
           <span className="font-semibold text-slate-600">Note:</span> a volunteer's{" "}
@@ -365,44 +366,16 @@ export function EventDetailPage({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
-                {staff.length === 0 && selfAdded.length === 0 && (
+                {attendees.length === 0 && (
                   <tr>
                     <td colSpan={4} className="px-4 py-10 text-center text-sm text-slate-500">
-                      No attendees yet. Add volunteers, scan their QR codes, or wait for them to submit their hours.
+                      No one on the list yet. Add volunteers from the left, or scan
+                      their QR codes to check them in.
                     </td>
                   </tr>
                 )}
 
-                {staff.map((a) => (
-                  <AttendanceRow
-                    key={a.volunteerName}
-                    entry={a}
-                    busy={busy}
-                    editing={editingRow === a.volunteerName}
-                    onToggle={handleToggleCheck}
-                    onRemove={handleRemove}
-                    onEdit={() => setEditingRow(a.volunteerName)}
-                    onCancelEdit={() => setEditingRow(null)}
-                    onSaveTimes={handleSaveTimes}
-                  />
-                ))}
-
-                {selfAdded.length > 0 && (
-                  <tr>
-                    <td colSpan={4} className="bg-amber-50/60 px-4 py-2">
-                      <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-amber-800">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
-                          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                          <line x1="12" y1="9" x2="12" y2="13" />
-                          <line x1="12" y1="17" x2="12.01" y2="17" />
-                        </svg>
-                        Submitted hours but not pre-added by staff
-                      </div>
-                    </td>
-                  </tr>
-                )}
-
-                {selfAdded.map((a) => (
+                {attendees.map((a) => (
                   <AttendanceRow
                     key={a.volunteerName}
                     entry={a}
@@ -460,12 +433,35 @@ function AttendanceRow({
 }) {
   const [inVal, setInVal] = useState(isoToLocalInput(entry.checkinAt));
   const [outVal, setOutVal] = useState(isoToLocalInput(entry.checkoutAt));
+  // The values as they were when the editor OPENED. We diff against these (not
+  // the live `entry`, which a concurrent scan may have changed) so an untouched
+  // field is never sent — a scan that lands while the editor is open survives.
+  const [seedIn, setSeedIn] = useState("");
+  const [seedOut, setSeedOut] = useState("");
+  const [timeError, setTimeError] = useState<string | null>(null);
 
-  // Re-sync the editor when opening it for this row.
   function startEdit() {
-    setInVal(isoToLocalInput(entry.checkinAt));
-    setOutVal(isoToLocalInput(entry.checkoutAt));
+    const si = isoToLocalInput(entry.checkinAt);
+    const so = isoToLocalInput(entry.checkoutAt);
+    setSeedIn(si);
+    setSeedOut(so);
+    setInVal(si);
+    setOutVal(so);
+    setTimeError(null);
     onEdit();
+  }
+
+  function saveTimes() {
+    // Guard: with both set, check-out must be after check-in (else the row
+    // shows "confirmed" but credits 0 hours).
+    if (inVal && outVal && new Date(outVal).getTime() <= new Date(inVal).getTime()) {
+      setTimeError("Check-out must be after check-in.");
+      return;
+    }
+    const patch: { checkinAt?: string | null; checkoutAt?: string | null } = {};
+    if (inVal !== seedIn) patch.checkinAt = localInputToIso(inVal);
+    if (outVal !== seedOut) patch.checkoutAt = localInputToIso(outVal);
+    onSaveTimes(entry.volunteerName, patch);
   }
 
   return (
@@ -554,21 +550,7 @@ function AttendanceRow({
                 />
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    // Send ONLY fields the admin actually changed, so an
-                    // unedited (or stale-blank) field can't overwrite a real
-                    // timestamp, and QR-stamped seconds aren't truncated.
-                    const origIn = isoToLocalInput(entry.checkinAt);
-                    const origOut = isoToLocalInput(entry.checkoutAt);
-                    const patch: { checkinAt?: string | null; checkoutAt?: string | null } = {};
-                    if (inVal !== origIn) patch.checkinAt = localInputToIso(inVal);
-                    if (outVal !== origOut) patch.checkoutAt = localInputToIso(outVal);
-                    onSaveTimes(entry.volunteerName, patch);
-                  }}
-                  className="btn-primary py-1.5 text-sm"
-                  disabled={busy}
-                >
+                <button onClick={saveTimes} className="btn-primary py-1.5 text-sm" disabled={busy}>
                   Save times
                 </button>
                 <button onClick={onCancelEdit} className="btn-secondary py-1.5 text-sm" disabled={busy}>
@@ -576,8 +558,12 @@ function AttendanceRow({
                 </button>
               </div>
             </div>
+            {timeError && (
+              <p className="mt-2 text-[11px] font-medium text-red-600">{timeError}</p>
+            )}
             <p className="mt-2 text-[11px] text-slate-400">
-              Setting a time also marks that side as checked. Clear a field to remove its time.
+              Setting a time marks that side checked; hours = check-out − check-in.
+              Clear a field to remove its time.
             </p>
           </td>
         </tr>
@@ -603,19 +589,21 @@ function CheckToggle({
       onClick={onClick}
       disabled={disabled}
       aria-label={ariaLabel}
-      className={`inline-flex h-8 w-8 items-center justify-center rounded-full transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+      className={`inline-flex h-8 w-8 items-center justify-center rounded-full border transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${
         checked
-          ? "bg-emerald-500 text-white shadow ring-emerald-200 focus:ring-emerald-500 hover:bg-emerald-600"
-          : "bg-red-500 text-white shadow ring-red-200 focus:ring-red-500 hover:bg-red-600"
+          ? "border-transparent bg-emerald-500 text-white shadow focus:ring-emerald-500 hover:bg-emerald-600"
+          : "border-slate-300 bg-white text-slate-400 hover:border-slate-400 hover:text-slate-600 focus:ring-slate-400"
       } disabled:cursor-not-allowed disabled:opacity-60`}
+      title={checked ? "Checked — tap to clear" : "Not yet — tap to stamp now"}
     >
       {checked ? (
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
           <path d="M20 6 9 17l-5-5" />
         </svg>
       ) : (
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
-          <path d="M18 6 6 18M6 6l12 12" />
+        // Neutral empty circle — "not yet", not an error.
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
+          <circle cx="12" cy="12" r="7" strokeDasharray="2 2" />
         </svg>
       )}
     </button>

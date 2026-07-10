@@ -68,10 +68,15 @@ export function CreateEventModal({ open, onClose, onCreated }: Props) {
         onClick={onClose}
         aria-hidden
       />
-      <div className="relative z-10 w-full max-w-xl overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl">
+      <div
+        className="relative z-10 w-full max-w-xl overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-event-title"
+      >
         <div className="flex items-start justify-between border-b border-slate-100 px-6 py-4">
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">
+            <h2 id="create-event-title" className="text-lg font-semibold text-slate-900">
               Create an Event
             </h2>
             <p className="text-sm text-slate-500">

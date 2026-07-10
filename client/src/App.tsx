@@ -119,6 +119,23 @@ export default function App() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [refresh, refreshVolunteers, isAdmin]);
 
+  // If a request 401s and clears the stored token, drop the admin UI + reset to
+  // the roster so the admin isn't stranded in a broken, tokenless admin state.
+  useEffect(() => {
+    function onCleared() {
+      setIsAdmin((was) => {
+        if (was) {
+          setView({ kind: "home" });
+          setAdminTab("roster");
+          setToast("Your admin session ended — please sign in again.");
+        }
+        return false;
+      });
+    }
+    window.addEventListener("ela-tcya-token-cleared", onCleared);
+    return () => window.removeEventListener("ela-tcya-token-cleared", onCleared);
+  }, []);
+
   const rosterNames = useMemo(() => roster.map((r) => r.name), [roster]);
 
   const summaries = useMemo(
@@ -250,7 +267,7 @@ export default function App() {
             <>
               {showRoster && (
                 <>
-                  <VolunteerTable summaries={summaries} />
+                  <VolunteerTable summaries={summaries} isAdmin={isAdmin} />
                   {isAdmin && <ExportButton summaries={summaries} />}
                 </>
               )}

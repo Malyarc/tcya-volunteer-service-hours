@@ -27,6 +27,13 @@ export function clearAdminToken(): void {
   } catch {
     // ignore
   }
+  // Notify the app so it can drop admin UI (e.g. after a 401 clears a stale
+  // token mid-session) instead of stranding a tokenless "admin" state.
+  try {
+    window.dispatchEvent(new Event("ela-tcya-token-cleared"));
+  } catch {
+    // ignore (non-browser / unsupported)
+  }
 }
 
 export function isAdminLoggedIn(): boolean {

@@ -418,7 +418,9 @@ export function runSuite(withServer, label) {
         api, auth, event.id, "Aaron Tse",
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
-      const subs = (await api.get("/api/submissions")).body.filter(
+      // Read WITH admin auth — the public projection strips the exact
+      // arrival/departure clock times (PII of minors).
+      const subs = (await api.get("/api/submissions", auth)).body.filter(
         (s) => s.volunteerName === "Aaron Tse"
       );
       assert.equal(subs.length, 1, "one derived submission");
@@ -427,6 +429,32 @@ export function runSuite(withServer, label) {
       assert.equal(subs[0].grade, "11th", "derived submission carries the volunteer's grade");
       assert.equal(subs[0].arrivalTime, "09:00", "sign-in HH:MM in chapter tz");
       assert.equal(subs[0].endTime, "12:00", "sign-out HH:MM in chapter tz");
+    });
+  });
+
+  test(name("public /submissions hides minors' arrival/departure times + comments; admin sees them"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
+      );
+      const pub = (await api.get("/api/submissions")).body.find(
+        (s) => s.volunteerName === "Aaron Tse"
+      );
+      assert.ok(pub, "public still lists the record (name/grade/hours)");
+      assert.equal(pub.hours, 3, "public sees the hour total");
+      assert.equal(pub.arrivalTime, undefined, "public must not see the exact sign-in time");
+      assert.equal(pub.endTime, undefined, "public must not see the exact sign-out time");
+      assert.equal(pub.comments, undefined, "public must not see free-text comments");
+      assert.equal(pub.submittedAt, undefined, "public must not see the internal submit timestamp");
+
+      const adm = (await api.get("/api/submissions", auth)).body.find(
+        (s) => s.volunteerName === "Aaron Tse"
+      );
+      assert.equal(adm.arrivalTime, "09:00", "admin sees the sign-in time");
+      assert.equal(adm.endTime, "12:00", "admin sees the sign-out time");
     });
   });
 
@@ -466,6 +494,70 @@ export function runSuite(withServer, label) {
         0,
         "removing the attendee removed their hours — no orphaned pending row"
       );
+    });
+  });
+
+  test(name("a complete but sub-quarter-hour visit still yields a (0-hour) submission, not a vanished row"), async () => {
+    // Reconcile must gate on raw completeness (isComplete), NOT on the rounded
+    // hours value — otherwise a genuine brief visit would silently disappear.
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T16:05:00.000Z" // 5 min -> rounds to 0
+      );
+      const subs = (await api.get("/api/submissions")).body.filter(
+        (s) => s.volunteerName === "Aaron Tse"
+      );
+      assert.equal(subs.length, 1, "the completed visit is still recorded");
+      assert.equal(subs[0].hours, 0, "rounded to zero hours, but present");
+    });
+  });
+
+  test(name("editing check-in to land after check-out makes the row incomplete and drops the hours"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
+      );
+      assert.equal((await api.get("/api/submissions")).body.length, 1);
+      // Move check-in to AFTER the existing check-out -> no longer complete.
+      await api.send("PATCH", `/api/events/${event.id}/attendance`, {
+        volunteerName: "Aaron Tse", checkinAt: "2026-03-15T20:00:00.000Z",
+      }, auth);
+      assert.equal(
+        (await api.get("/api/submissions")).body.length,
+        0,
+        "checkout < checkin => incomplete => no derived hours"
+      );
+    });
+  });
+
+  test(name("editing the times updates the derived hours in place (no duplicate submission)"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z" // 3h
+      );
+      let subs = (await api.get("/api/submissions")).body.filter(
+        (s) => s.volunteerName === "Aaron Tse"
+      );
+      assert.equal(subs.length, 1);
+      assert.equal(subs[0].hours, 3);
+      // Shorten the visit to 1 hour — same row, recomputed hours.
+      await api.send("PATCH", `/api/events/${event.id}/attendance`, {
+        volunteerName: "Aaron Tse", checkoutAt: "2026-03-15T17:00:00.000Z",
+      }, auth);
+      subs = (await api.get("/api/submissions")).body.filter(
+        (s) => s.volunteerName === "Aaron Tse"
+      );
+      assert.equal(subs.length, 1, "still exactly one submission for the pair");
+      assert.equal(subs[0].hours, 1, "hours recomputed in place");
     });
   });
 

@@ -10,9 +10,10 @@ import { Avatar } from "./Avatar";
 
 interface Props {
   summaries: VolunteerSummary[];
+  isAdmin?: boolean;
 }
 
-export function VolunteerTable({ summaries }: Props) {
+export function VolunteerTable({ summaries, isAdmin = false }: Props) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [hideEmpty, setHideEmpty] = useState(false);
@@ -125,6 +126,7 @@ export function VolunteerTable({ summaries }: Props) {
                   v={v}
                   isOpen={isOpen}
                   hasHours={hasHours}
+                  isAdmin={isAdmin}
                   onToggle={() => toggle(v.name)}
                 />
               );
@@ -140,18 +142,34 @@ function FragmentRow({
   v,
   isOpen,
   hasHours,
+  isAdmin,
   onToggle,
 }: {
   v: VolunteerSummary;
   isOpen: boolean;
   hasHours: boolean;
+  isAdmin: boolean;
   onToggle: () => void;
 }) {
   return (
     <>
       <tr
         onClick={onToggle}
-        className={`cursor-pointer transition hover:bg-brand-50/40 ${
+        role="button"
+        tabIndex={0}
+        aria-expanded={isOpen}
+        onKeyDown={(e) => {
+          // Only respond to keys on the row itself. Enter/Space bubbling up from
+          // a nested control (the certificate download button) must NOT toggle
+          // the row — otherwise Enter on that button would expand the row while
+          // preventDefault() swallows the button's own activation.
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+        className={`cursor-pointer transition hover:bg-brand-50/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-brand-400 ${
           isOpen ? "bg-brand-50/30" : ""
         }`}
       >
@@ -219,37 +237,49 @@ function FragmentRow({
       </tr>
       {isOpen && (
         <tr className="bg-slate-50/60">
-          <td colSpan={6} className="px-5 py-5">
+          <td colSpan={6} className="px-4 py-5 sm:px-5">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-medium text-slate-700">
+                {v.submissions.length} event{v.submissions.length === 1 ? "" : "s"} ·{" "}
+                {formatHours(v.totalHours)} hrs
+              </div>
+              {/* Cumulative certificate — reachable here on phones (the roster
+                  column that holds it is hidden below the sm breakpoint). On
+                  sm+ the roster row already shows this button, so hide it here
+                  to avoid a duplicate. */}
+              <div className="sm:hidden">
+                <CertificateButton
+                  label="Download certificate"
+                  disabled={!hasHours}
+                  title={hasHours ? "Download full certification letter" : "No confirmed hours yet"}
+                  onClick={() =>
+                    downloadVolunteerCertificate(v.name, v.totalHours, v.submissions)
+                  }
+                />
+              </div>
+            </div>
             {v.submissions.length === 0 ? (
               <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
                 No service hours logged yet.
               </div>
             ) : (
-              <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
                 <table className="min-w-full divide-y divide-slate-100 text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
                     <tr>
-                      <th className="px-4 py-2 text-left font-semibold">
-                        Date
-                      </th>
-                      <th className="px-4 py-2 text-left font-semibold">
-                        Event
-                      </th>
-                      <th className="px-4 py-2 text-left font-semibold">
-                        Sign In
-                      </th>
-                      <th className="px-4 py-2 text-left font-semibold">
-                        Sign Out
-                      </th>
-                      <th className="px-4 py-2 text-right font-semibold">
-                        Hours
-                      </th>
-                      <th className="px-4 py-2 text-left font-semibold">
-                        Comments
-                      </th>
-                      <th className="px-4 py-2 text-right font-semibold">
-                        Certificate
-                      </th>
+                      <th className="px-4 py-2 text-left font-semibold">Date</th>
+                      <th className="px-4 py-2 text-left font-semibold">Event</th>
+                      {isAdmin && (
+                        <>
+                          <th className="hidden px-4 py-2 text-left font-semibold sm:table-cell">Sign In</th>
+                          <th className="hidden px-4 py-2 text-left font-semibold sm:table-cell">Sign Out</th>
+                        </>
+                      )}
+                      <th className="px-4 py-2 text-right font-semibold">Hours</th>
+                      {isAdmin && (
+                        <th className="hidden px-4 py-2 text-left font-semibold md:table-cell">Comments</th>
+                      )}
+                      <th className="px-4 py-2 text-right font-semibold">Certificate</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -258,6 +288,7 @@ function FragmentRow({
                         key={s.id}
                         submission={s}
                         volunteerName={v.name}
+                        isAdmin={isAdmin}
                       />
                     ))}
                   </tbody>
@@ -274,9 +305,11 @@ function FragmentRow({
 function SubmissionRow({
   submission,
   volunteerName,
+  isAdmin,
 }: {
   submission: Submission;
   volunteerName: string;
+  isAdmin: boolean;
 }) {
   return (
     <tr className="align-top">
@@ -284,18 +317,24 @@ function SubmissionRow({
         {formatDate(submission.eventDate)}
       </td>
       <td className="px-4 py-2 text-slate-700">{displayEventName(submission)}</td>
-      <td className="whitespace-nowrap px-4 py-2 text-slate-700">
-        {formatTime12h(submission.arrivalTime)}
-      </td>
-      <td className="whitespace-nowrap px-4 py-2 text-slate-700">
-        {formatTime12h(submission.endTime)}
-      </td>
+      {isAdmin && (
+        <>
+          <td className="hidden whitespace-nowrap px-4 py-2 text-slate-700 sm:table-cell">
+            {formatTime12h(submission.arrivalTime)}
+          </td>
+          <td className="hidden whitespace-nowrap px-4 py-2 text-slate-700 sm:table-cell">
+            {formatTime12h(submission.endTime)}
+          </td>
+        </>
+      )}
       <td className="whitespace-nowrap px-4 py-2 text-right font-medium text-brand-700">
         {formatHours(submission.hours)}
       </td>
-      <td className="px-4 py-2 text-slate-600">
-        {submission.comments || <span className="text-slate-400">—</span>}
-      </td>
+      {isAdmin && (
+        <td className="hidden px-4 py-2 text-slate-600 md:table-cell">
+          {submission.comments || <span className="text-slate-400">—</span>}
+        </td>
+      )}
       <td className="whitespace-nowrap px-4 py-2 text-right">
         <CertificateButton
           label="Download"

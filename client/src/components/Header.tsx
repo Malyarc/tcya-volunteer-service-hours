@@ -104,7 +104,8 @@ export function Header({
                 ELA TCYA Volunteer Service Hours
               </h1>
               <p className="mt-1 text-sm text-white/80">
-                Sign in, log your service, walk the path of great love together.
+                Tracking our volunteers' service hours, walking the path of great
+                love together.
               </p>
             </div>
           </div>
@@ -112,7 +113,7 @@ export function Header({
 
         <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <StatCard label="Total Hours Logged" value={totalHours.toFixed(1)} />
-          <StatCard label="Submissions" value={totalSubmissions.toString()} />
+          <StatCard label="Service Records" value={totalSubmissions.toString()} />
           <StatCard
             label="Active Volunteers"
             value={activeVolunteers.toString()}

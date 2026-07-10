@@ -65,7 +65,12 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
         onClick={onClose}
         aria-hidden
       />
-      <div className="relative w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
+      <div
+        className="relative w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="admin-login-title"
+      >
         <div className="bg-gradient-to-br from-brand-700 to-brand-800 px-6 py-5 text-white">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/30">
@@ -83,7 +88,7 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
               </svg>
             </div>
             <div>
-              <h2 className="text-lg font-semibold">Admin Login</h2>
+              <h2 id="admin-login-title" className="text-lg font-semibold">Admin Login</h2>
               <p className="text-sm text-white/80">
                 Sign in to manage events and attendance.
               </p>

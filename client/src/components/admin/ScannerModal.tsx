@@ -7,6 +7,7 @@ import { formatClockFromIso, getEventDisplayName } from "../../utils";
 type Mode = "in" | "out";
 type Feedback = { kind: "ok" | "warn" | "error"; text: string; at: number } | null;
 interface RecentScan {
+  id: number;
   name: string;
   code: string;
   mode: Mode;
@@ -34,6 +35,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
   const [manualCode, setManualCode] = useState("");
   const [manualPick, setManualPick] = useState("");
   const [processing, setProcessing] = useState(false);
+  const scanIdRef = useRef(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -55,13 +57,26 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { eventIdRef.current = event.id; }, [event.id]);
 
-  function beep(kind: "ok" | "error") {
+  // Create/resume the AudioContext. iOS Safari only allows this inside a user
+  // gesture, so we call it from the mode buttons / a tap on the camera — not
+  // lazily at scan time (which would leave beeps silent on iPhones/iPads).
+  function ensureAudio() {
     try {
       if (!audioRef.current) {
         const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
         audioRef.current = new Ctor();
       }
+      if (audioRef.current.state === "suspended") audioRef.current.resume().catch(() => {});
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  function beep(kind: "ok" | "error") {
+    try {
+      ensureAudio();
       const ctx = audioRef.current;
+      if (!ctx) return;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
@@ -100,13 +115,16 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
       if (processingRef.current) return;
       processingRef.current = true;
       setProcessing(true);
+      // Capture the scan direction ONCE, before the await — otherwise flipping
+      // Check-In/Check-Out mid-request would mislabel this scan's result.
+      const inMode = modeRef.current === "in";
+      const mode: Mode = inMode ? "in" : "out";
+      const verb = inMode ? "in" : "out";
       try {
-        const fn = modeRef.current === "in" ? checkInByCode : checkOutByCode;
+        const fn = inMode ? checkInByCode : checkOutByCode;
         const res = await fn(eventIdRef.current, parsed.code);
         onScanned(res.event);
-        const inMode = modeRef.current === "in";
         const t = inMode ? res.attendance.checkinAt : res.attendance.checkoutAt;
-        const verb = inMode ? "in" : "out";
         beep("ok");
         // Distinguish a fresh scan from re-scanning someone already done.
         const text = res.alreadyDone
@@ -116,9 +134,10 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
         setRecent((prev) =>
           [
             {
+              id: (scanIdRef.current += 1),
               name: res.volunteer.name + (res.alreadyDone ? " (already done)" : ""),
               code: res.volunteer.code,
-              mode: modeRef.current,
+              mode,
               time: formatClockFromIso(t) || "now",
               status: "ok" as const,
             },
@@ -131,7 +150,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
         setFeedback({ kind: "error", text: msg, at: Date.now() });
         setRecent((prev) =>
           [
-            { name: msg, code: parsed.code, mode: modeRef.current, time: "", status: "unknown" as const },
+            { id: (scanIdRef.current += 1), name: msg, code: parsed.code, mode, time: "", status: "unknown" as const },
             ...prev,
           ].slice(0, 12)
         );
@@ -308,6 +327,10 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
         role="dialog"
         aria-modal="true"
         aria-label="Scan volunteer QR codes"
+        // Unlock audio on the FIRST tap anywhere in the scanner (iOS Safari only
+        // permits AudioContext.resume() inside a user gesture). This covers the
+        // common check-in-only flow where the operator never taps a mode button.
+        onPointerDown={ensureAudio}
         className="relative z-10 flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl"
       >
         <div className="flex items-start justify-between border-b border-slate-100 px-5 py-3">
@@ -324,8 +347,8 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
 
         {/* Mode toggle */}
         <div className="flex gap-2 px-5 pt-3">
-          <ModeButton active={mode === "in"} tone="in" onClick={() => setMode("in")} label="Check In" />
-          <ModeButton active={mode === "out"} tone="out" onClick={() => setMode("out")} label="Check Out" />
+          <ModeButton active={mode === "in"} tone="in" onClick={() => { ensureAudio(); setMode("in"); }} label="Check In" />
+          <ModeButton active={mode === "out"} tone="out" onClick={() => { ensureAudio(); setMode("out"); }} label="Check Out" />
         </div>
 
         <div className="overflow-y-auto px-5 py-4">
@@ -415,9 +438,9 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
                 This session ({recent.filter((r) => r.status === "ok").length})
               </div>
               <ul className="max-h-40 space-y-1 overflow-y-auto">
-                {recent.map((r, i) => (
+                {recent.map((r) => (
                   <li
-                    key={i}
+                    key={r.id}
                     className={`flex items-center justify-between rounded-lg px-3 py-1.5 text-sm ${
                       r.status === "ok" ? "bg-emerald-50 text-emerald-900" : "bg-red-50 text-red-800"
                     }`}

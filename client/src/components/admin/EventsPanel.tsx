@@ -91,7 +91,17 @@ export function EventsPanel({ events, onCreate, onOpenEvent }: Props) {
                 <tr
                   key={ev.id}
                   onClick={() => onOpenEvent(ev.id)}
-                  className="cursor-pointer transition hover:bg-brand-50/40"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open ${getEventDisplayName(ev)}`}
+                  onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onOpenEvent(ev.id);
+                    }
+                  }}
+                  className="cursor-pointer transition hover:bg-brand-50/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-brand-400"
                 >
                   <td className="whitespace-nowrap px-5 py-3 text-sm text-slate-700">
                     {formatDate(ev.date)}
