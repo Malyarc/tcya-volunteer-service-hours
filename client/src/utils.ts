@@ -60,6 +60,38 @@ export function formatTime12h(hhmm: string): string {
   return `${hour12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
+// ---------- Check-in / check-out timestamp helpers (ISO <-> local) ----------
+
+// A short local clock time, e.g. "3:45 PM", from an ISO timestamp.
+export function formatClockFromIso(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+// ISO -> value for <input type="datetime-local"> (local 'YYYY-MM-DDTHH:MM').
+export function isoToLocalInput(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
+    d.getDate()
+  )}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// <input type="datetime-local"> value (local) -> ISO string (or null if blank).
+export function localInputToIso(val: string): string | null {
+  if (!val) return null;
+  const d = new Date(val); // parsed as local time
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 // A submission's hours only count when:
 //   - the event still exists, AND
 //   - the volunteer's attendance row has BOTH staff check-in and volunteer

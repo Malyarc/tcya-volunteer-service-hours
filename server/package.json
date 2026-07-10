@@ -7,10 +7,12 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "migrate": "node src/migrate.js",
     "reset": "node src/reset.js",
     "test": "node --test"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
     "cors": "^2.8.5",
     "express": "^4.21.2"
   },

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { VOLUNTEERS } from "../data/volunteers";
 import { GRADES } from "../data/events";
 import { createSubmission } from "../api";
 import type { NewSubmission, VolunteerEvent } from "../types";
@@ -14,6 +13,7 @@ import {
 interface Props {
   open: boolean;
   events: VolunteerEvent[];
+  rosterNames: string[];
   onClose: () => void;
   onSubmitted: () => void;
 }
@@ -36,7 +36,13 @@ const EMPTY: FormState = {
   comments: "",
 };
 
-export function SubmissionForm({ open, events, onClose, onSubmitted }: Props) {
+export function SubmissionForm({
+  open,
+  events,
+  rosterNames,
+  onClose,
+  onSubmitted,
+}: Props) {
   const [state, setState] = useState<FormState>(EMPTY);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,9 +68,9 @@ export function SubmissionForm({ open, events, onClose, onSubmitted }: Props) {
 
   const filteredNames = useMemo(() => {
     const q = nameQuery.trim().toLowerCase();
-    if (!q) return VOLUNTEERS;
-    return VOLUNTEERS.filter((n) => n.toLowerCase().includes(q));
-  }, [nameQuery]);
+    if (!q) return rosterNames;
+    return rosterNames.filter((n) => n.toLowerCase().includes(q));
+  }, [nameQuery, rosterNames]);
 
   // Sort events: upcoming/today first (by date asc), then past (date desc).
   const sortedEvents = useMemo(() => {
@@ -100,7 +106,7 @@ export function SubmissionForm({ open, events, onClose, onSubmitted }: Props) {
     setError(null);
 
     if (!state.volunteerName) return setError("Please select your name.");
-    if (!VOLUNTEERS.includes(state.volunteerName)) {
+    if (!rosterNames.includes(state.volunteerName)) {
       return setError("Pick your name from the suggestions.");
     }
     if (!state.grade) return setError("Please select your grade.");

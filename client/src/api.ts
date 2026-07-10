@@ -3,6 +3,11 @@ import type {
   Submission,
   VolunteerEvent,
   NewEvent,
+  Volunteer,
+  NewVolunteer,
+  VolunteerPatch,
+  RosterEntry,
+  ScanResult,
 } from "./types";
 import { clearAdminToken, getAdminToken } from "./auth";
 
@@ -23,14 +28,19 @@ async function handle<T>(res: Response): Promise<T> {
       clearAdminToken();
     }
     let message = `Request failed (${res.status})`;
+    let code: string | undefined;
     try {
       const data = await res.json();
       if (Array.isArray(data?.errors)) message = data.errors.join(", ");
       else if (data?.error) message = data.error;
+      if (typeof data?.code === "string") code = data.code;
     } catch {
       // ignore parse errors
     }
-    throw new Error(message);
+    const err = new Error(message) as Error & { status?: number; code?: string };
+    err.status = res.status;
+    err.code = code;
+    throw err;
   }
   return res.json();
 }
@@ -58,6 +68,58 @@ export async function checkAdminSession(): Promise<boolean> {
   if (!res.ok) return false;
   const data = (await res.json()) as { admin?: boolean };
   return Boolean(data.admin);
+}
+
+// ---------- Roster (public, names + grade only) ----------
+
+export async function fetchRoster(): Promise<RosterEntry[]> {
+  const res = await fetch(`${API_BASE}/roster`, {
+    cache: "no-store",
+    headers: headers(),
+  });
+  return handle<RosterEntry[]>(res);
+}
+
+// ---------- Volunteers (admin) ----------
+
+export async function fetchVolunteers(): Promise<Volunteer[]> {
+  const res = await fetch(`${API_BASE}/volunteers`, {
+    cache: "no-store",
+    headers: headers(),
+  });
+  return handle<Volunteer[]>(res);
+}
+
+export async function createVolunteer(
+  payload: NewVolunteer,
+  force = false
+): Promise<Volunteer> {
+  const res = await fetch(`${API_BASE}/volunteers`, {
+    method: "POST",
+    headers: headers(true),
+    body: JSON.stringify(force ? { ...payload, force: true } : payload),
+  });
+  return handle<Volunteer>(res);
+}
+
+export async function updateVolunteer(
+  id: string,
+  patch: VolunteerPatch
+): Promise<Volunteer> {
+  const res = await fetch(`${API_BASE}/volunteers/${id}`, {
+    method: "PATCH",
+    headers: headers(true),
+    body: JSON.stringify(patch),
+  });
+  return handle<Volunteer>(res);
+}
+
+export async function deleteVolunteer(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/volunteers/${id}`, {
+    method: "DELETE",
+    headers: headers(),
+  });
+  await handle<{ ok: true }>(res);
 }
 
 // ---------- Submissions ----------
@@ -124,7 +186,12 @@ export async function addAttendees(
 export async function patchAttendee(
   eventId: string,
   volunteerName: string,
-  patch: { staffCheckin?: boolean; volunteerCheckout?: boolean }
+  patch: {
+    staffCheckin?: boolean;
+    volunteerCheckout?: boolean;
+    checkinAt?: string | null;
+    checkoutAt?: string | null;
+  }
 ): Promise<VolunteerEvent> {
   const res = await fetch(`${API_BASE}/events/${eventId}/attendance`, {
     method: "PATCH",
@@ -144,4 +211,30 @@ export async function removeAttendee(
     body: JSON.stringify({ volunteerName }),
   });
   return handle<VolunteerEvent>(res);
+}
+
+// ---------- QR check-in / check-out (admin scanner) ----------
+
+export async function checkInByCode(
+  eventId: string,
+  code: string
+): Promise<ScanResult> {
+  const res = await fetch(`${API_BASE}/events/${eventId}/checkin`, {
+    method: "POST",
+    headers: headers(true),
+    body: JSON.stringify({ code }),
+  });
+  return handle<ScanResult>(res);
+}
+
+export async function checkOutByCode(
+  eventId: string,
+  code: string
+): Promise<ScanResult> {
+  const res = await fetch(`${API_BASE}/events/${eventId}/checkout`, {
+    method: "POST",
+    headers: headers(true),
+    body: JSON.stringify({ code }),
+  });
+  return handle<ScanResult>(res);
 }

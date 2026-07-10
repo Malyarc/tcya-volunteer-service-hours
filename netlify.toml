@@ -2,8 +2,12 @@
 #
 # - The frontend is a Vite build inside the `client` workspace.
 # - The backend lives in `netlify/functions/api/` and is invoked via the
-#   `/api/*` rewrite below.
-# - Production data is persisted to Netlify Blobs (no extra services).
+#   `/api/*` rewrite below. Its deps (serverless-http, @neondatabase/serverless)
+#   live in the root package.json, which Netlify installs before bundling.
+# - Production data is persisted to Postgres (Neon). Set DATABASE_URL (plus
+#   ADMIN_PASSWORD / SESSION_SECRET) in Site configuration → Environment
+#   variables. Without DATABASE_URL the function falls back to a NON-persistent
+#   in-memory store, and admin is disabled unless ADMIN_PASSWORD is set.
 
 [build]
   # Run from the repo root (the default; no `base` line needed).

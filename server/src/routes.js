@@ -1,8 +1,7 @@
 // Shared Express router. The same routes serve both the EC2 deployment
-// (`server/src/index.js` with file-backed storage) and the Netlify Functions
-// deployment (`netlify/functions/api/api.mjs` with Netlify Blobs storage).
-//
-// Storage is injected so this module has no I/O concerns of its own.
+// (server/src/index.js) and the Netlify Functions deployment
+// (netlify/functions/api/api.mjs). The storage backend (Postgres or in-memory)
+// is injected as a `store` so this module has no I/O concerns of its own.
 
 import express from "express";
 import crypto from "crypto";
@@ -25,11 +24,6 @@ function isValidTime(t) {
   if (typeof t !== "string" || !/^\d{2}:\d{2}$/.test(t)) return false;
   const hours = parseInt(t.slice(0, 2), 10);
   const minutes = parseInt(t.slice(3, 5), 10);
-  // Must be a real wall-clock time (00:00–23:59), on a 15-minute boundary
-  // (:00, :15, :30, :45). Without the range check the regex alone accepts
-  // impossible values like "99:45", letting a raw API call claim absurd
-  // hours (e.g. 00:00 → 99:45 computed to 99.75 hours). The <input type=time>
-  // on the client already constrains this; the server must too.
   if (hours > 23 || minutes > 59) return false;
   return minutes % 15 === 0;
 }
@@ -37,53 +31,58 @@ function isValidDate(d) {
   return typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function normalizeIsoOrNull(v) {
+  if (v === null) return null;
+  if (typeof v !== "string") return undefined;
+  const t = Date.parse(v);
+  if (Number.isNaN(t)) return undefined;
+  return new Date(t).toISOString();
+}
 
-// Netlify Blobs reads are eventually consistent (and strong consistency is not
-// available under connectLambda — see netlify/functions/api/storage-blobs.js),
-// so an event created in a just-prior request may not be visible on the first
-// read. Retry the read-modify-write until `attempt` reports it found what it
-// needed. `attempt(current)` returns { next, value } to commit, or null when
-// the target isn't visible yet.
-//
-// Critically, when the target isn't visible we ABORT the write (throw) rather
-// than persisting `current`: writeData does read-modify-write, so writing back
-// a stale snapshot would clobber the very event we're waiting for (last-writer-
-// wins) and it would never appear. Throwing skips the persist entirely.
-//
-// Resolves to the found `value`, or null if it never appeared. On the strongly-
-// consistent EC2 file store the first attempt always succeeds — no added
-// latency, no retries.
-const CONSISTENCY_RETRIES = 6;
-const CONSISTENCY_DELAY_MS = 250;
-const NOT_VISIBLE_YET = Symbol("consistency-target-not-visible-yet");
+function trimStr(v, max = 500) {
+  return typeof v === "string" ? v.trim().slice(0, max) : "";
+}
 
-async function writeWithConsistencyRetry(writeData, attempt) {
-  for (let i = 0; i < CONSISTENCY_RETRIES; i += 1) {
-    if (i > 0) await sleep(CONSISTENCY_DELAY_MS);
-    try {
-      let value = null;
-      await writeData(async (current) => {
-        const result = attempt(current);
-        if (!result) throw NOT_VISIBLE_YET; // abort write, no clobber, then retry
-        value = result.value;
-        return result.next;
-      });
-      return value;
-    } catch (err) {
-      if (err === NOT_VISIBLE_YET) continue;
-      throw err;
-    }
+function sanitizeCustomFields(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out = {};
+  let count = 0;
+  for (const [k, val] of Object.entries(v)) {
+    const key = String(k).trim().slice(0, 60);
+    if (!key) continue;
+    out[key] =
+      val == null ? "" : String(typeof val === "object" ? "" : val).slice(0, 500);
+    count += 1;
+    if (count >= 30) break;
   }
-  return null;
+  return out;
+}
+
+// Strip fields the public shouldn't see from an event's attendance list. The
+// volunteer QR `code` is a check-in credential, and volunteer ids + check-in/out
+// timestamps are internal — none belong in the anonymous GET /events response.
+// Admin callers get the full objects.
+function publicEvent(event) {
+  return {
+    ...event,
+    attendance: (event.attendance || []).map((a) => ({
+      volunteerName: a.volunteerName,
+      staffCheckin: a.staffCheckin,
+      volunteerCheckout: a.volunteerCheckout,
+      selfAdded: a.selfAdded,
+    })),
+  };
 }
 
 export function createRouter({
-  readData,
-  writeData,
+  store,
   adminUsername,
   adminPassword,
   sessionSecret,
+  // When false (production with no explicit ADMIN_PASSWORD), all admin routes
+  // and /login are disabled so a predictable default credential can never grant
+  // access. See the entry points (index.js / api.mjs).
+  adminEnabled = true,
 }) {
   const ADMIN_TOKEN = crypto
     .createHmac("sha256", sessionSecret)
@@ -91,13 +90,65 @@ export function createRouter({
     .digest("hex");
 
   function isAdminRequest(req) {
+    if (!adminEnabled) return false;
     const token = (req.headers["x-admin-token"] || "").toString();
     return constantTimeEqual(token, ADMIN_TOKEN);
   }
 
   function requireAdmin(req, res, next) {
+    if (!adminEnabled) {
+      return res.status(503).json({
+        error:
+          "Admin is disabled on this deployment. Set ADMIN_PASSWORD to enable it.",
+      });
+    }
     if (isAdminRequest(req)) return next();
     res.status(401).json({ error: "Admin authentication required" });
+  }
+
+  // ---- Login throttle: cap failed attempts per client IP. In-memory (per
+  // instance), so it's best-effort on serverless, but it meaningfully slows a
+  // brute force of the single shared password. ----
+  const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+  const LOGIN_MAX_FAILS = 10;
+  const LOGIN_LOCK_MS = 15 * 60 * 1000;
+  const loginAttempts = new Map();
+  function loginKey(req) {
+    // Key on an address the client cannot forge. `x-nf-client-connection-ip` is
+    // set by Netlify's edge to the real client IP and cannot be overridden by
+    // the caller. We deliberately do NOT read `x-forwarded-for` (fully
+    // client-settable) — that would let an attacker rotate the header to get a
+    // fresh bucket per request and bypass the throttle entirely. Fall back to
+    // the direct socket address (trust-proxy is left off, so req.ip is the
+    // socket peer, not a forwarded header).
+    const nf = (req.headers["x-nf-client-connection-ip"] || "").toString().trim();
+    return nf || req.ip || req.socket?.remoteAddress || "unknown";
+  }
+  function loginLockRemaining(key) {
+    const a = loginAttempts.get(key);
+    if (a && a.lockedUntil && a.lockedUntil > Date.now()) {
+      return Math.ceil((a.lockedUntil - Date.now()) / 1000);
+    }
+    return 0;
+  }
+  function loginRecordFail(key) {
+    const now = Date.now();
+    let a = loginAttempts.get(key);
+    if (!a || now - a.first > LOGIN_WINDOW_MS) a = { count: 0, first: now, lockedUntil: 0 };
+    a.count += 1;
+    if (a.count >= LOGIN_MAX_FAILS) a.lockedUntil = now + LOGIN_LOCK_MS;
+    loginAttempts.set(key, a);
+    // Bound the map by evicting the oldest entries that are NOT actively locked,
+    // so a flood of distinct keys can't wipe a genuine lockout via `.clear()`.
+    if (loginAttempts.size > 5000) {
+      for (const [k, v] of loginAttempts) {
+        if (loginAttempts.size <= 4000) break;
+        if (!(v.lockedUntil && v.lockedUntil > now)) loginAttempts.delete(k);
+      }
+    }
+  }
+  function loginRecordSuccess(key) {
+    loginAttempts.delete(key);
   }
 
   const router = express.Router();
@@ -109,6 +160,19 @@ export function createRouter({
   // ---------- Auth ----------
 
   router.post("/login", (req, res) => {
+    if (!adminEnabled) {
+      return res.status(503).json({
+        error:
+          "Admin is disabled on this deployment. Set ADMIN_PASSWORD to enable it.",
+      });
+    }
+    const key = loginKey(req);
+    const wait = loginLockRemaining(key);
+    if (wait > 0) {
+      return res
+        .status(429)
+        .json({ error: `Too many attempts. Try again in ${wait}s.` });
+    }
     const { username, password } = req.body || {};
     if (typeof username !== "string" || username.length === 0) {
       return res.status(400).json({ error: "Username is required" });
@@ -118,11 +182,11 @@ export function createRouter({
     }
     const userOk = constantTimeEqual(username, adminUsername);
     const passOk = constantTimeEqual(password, adminPassword);
-    // Always evaluate both checks so the response time doesn't leak which
-    // field was wrong.
     if (!userOk || !passOk) {
+      loginRecordFail(key);
       return res.status(401).json({ error: "Invalid username or password" });
     }
+    loginRecordSuccess(key);
     res.json({ token: ADMIN_TOKEN });
   });
 
@@ -130,12 +194,105 @@ export function createRouter({
     res.json({ admin: isAdminRequest(req) });
   });
 
+  // ---------- Public roster (names + grade only, no PII) ----------
+
+  router.get("/roster", async (_req, res) => {
+    try {
+      const vols = await store.listVolunteers();
+      res.json(vols.map((v) => ({ name: v.name, grade: v.grade || "" })));
+    } catch (err) {
+      console.error("Failed to read roster", err);
+      res.status(500).json({ error: "Failed to read roster" });
+    }
+  });
+
+  // ---------- Volunteers (admin — full records incl. contact info) ----------
+
+  router.get("/volunteers", requireAdmin, async (_req, res) => {
+    try {
+      res.json(await store.listVolunteers());
+    } catch (err) {
+      console.error("Failed to read volunteers", err);
+      res.status(500).json({ error: "Failed to read volunteers" });
+    }
+  });
+
+  router.post("/volunteers", requireAdmin, async (req, res) => {
+    const body = req.body || {};
+    const name = trimStr(body.name, 120);
+    if (!name) return res.status(400).json({ error: "name is required" });
+    try {
+      // Guard against accidental duplicate names — attendance and hours are
+      // keyed by name, so two "John Smith"s would silently merge. Deliberate
+      // duplicates can pass `force: true`.
+      if (body.force !== true) {
+        const existing = await store.getVolunteerByName(name);
+        if (existing) {
+          return res.status(409).json({
+            error: `A volunteer named "${name}" already exists (${existing.code}). Add anyway?`,
+            code: "duplicate_name",
+          });
+        }
+      }
+      const volunteer = await store.createVolunteer({
+        name,
+        email: trimStr(body.email, 200),
+        phone: trimStr(body.phone, 60),
+        grade: trimStr(body.grade, 40),
+        customFields: sanitizeCustomFields(body.customFields),
+      });
+      res.status(201).json(volunteer);
+    } catch (err) {
+      console.error("Failed to create volunteer", err);
+      res.status(500).json({ error: "Failed to create volunteer" });
+    }
+  });
+
+  router.patch("/volunteers/:id", requireAdmin, async (req, res) => {
+    const body = req.body || {};
+    const patch = {};
+    if (body.name !== undefined) {
+      const name = trimStr(body.name, 120);
+      if (!name) return res.status(400).json({ error: "name cannot be empty" });
+      patch.name = name;
+    }
+    if (body.email !== undefined) patch.email = trimStr(body.email, 200);
+    if (body.phone !== undefined) patch.phone = trimStr(body.phone, 60);
+    if (body.grade !== undefined) patch.grade = trimStr(body.grade, 40);
+    if (body.active !== undefined) patch.active = Boolean(body.active);
+    if (body.customFields !== undefined)
+      patch.customFields = sanitizeCustomFields(body.customFields);
+
+    try {
+      const volunteer = await store.updateVolunteer(req.params.id, patch);
+      if (!volunteer)
+        return res.status(404).json({ error: "Volunteer not found" });
+      res.json(volunteer);
+    } catch (err) {
+      if (err && err.code === "name_conflict") {
+        return res.status(409).json({ error: err.message });
+      }
+      console.error("Failed to update volunteer", err);
+      res.status(500).json({ error: "Failed to update volunteer" });
+    }
+  });
+
+  router.delete("/volunteers/:id", requireAdmin, async (req, res) => {
+    try {
+      const ok = await store.deleteVolunteer(req.params.id);
+      if (!ok) return res.status(404).json({ error: "Volunteer not found" });
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Failed to delete volunteer", err);
+      res.status(500).json({ error: "Failed to delete volunteer" });
+    }
+  });
+
   // ---------- Submissions ----------
 
   router.get("/submissions", async (_req, res) => {
     try {
-      const data = await readData();
-      res.json(data.submissions);
+      res.json(await store.listSubmissions());
     } catch (err) {
       console.error("Failed to read submissions", err);
       res.status(500).json({ error: "Failed to read submissions" });
@@ -144,14 +301,17 @@ export function createRouter({
 
   router.post("/submissions", async (req, res) => {
     const body = req.body || {};
-    const { volunteerName, grade, eventId, arrivalTime, endTime, comments } =
-      body;
+    const { eventId, arrivalTime, endTime } = body;
 
     const errors = [];
-    if (!volunteerName || typeof volunteerName !== "string") {
-      errors.push("volunteerName is required");
-    }
-    if (!grade || typeof grade !== "string") errors.push("grade is required");
+    // Cap the stored free-text on this PUBLIC endpoint so anonymous callers
+    // can't bloat the store with megabyte strings.
+    const volunteerName = trimStr(body.volunteerName, 120);
+    const grade = trimStr(body.grade, 40);
+    const comments = trimStr(body.comments, 2000);
+
+    if (!volunteerName) errors.push("volunteerName is required");
+    if (!grade) errors.push("grade is required");
     if (!eventId || typeof eventId !== "string")
       errors.push("eventId is required");
     if (!isValidTime(arrivalTime))
@@ -164,87 +324,22 @@ export function createRouter({
 
     if (errors.length > 0) return res.status(400).json({ errors });
 
-    const volunteerNameClean = volunteerName.trim();
-
     try {
-      const savedSubmission = await writeWithConsistencyRetry(
-        writeData,
-        (current) => {
-          // The event may have been created moments ago in a separate request;
-          // under Netlify Blobs' eventual consistency it might not be visible
-          // yet. Returning null retries the read until it appears.
-          const event = current.events.find((e) => e.id === eventId);
-          if (!event) return null;
-
-          // Upsert: keep exactly one submission per (event, volunteer). The
-          // attendance list holds a single row per volunteer per event, so a
-          // second submission for the same event must not create a second
-          // countable record — that double-counted hours. Re-submitting
-          // corrects the existing entry; collapsing *all* prior matches also
-          // self-heals duplicates that pre-date this rule.
-          const samePair = (s) =>
-            s.eventId === eventId && s.volunteerName === volunteerNameClean;
-          const prior = current.submissions.filter(samePair);
-
-          const submission = {
-            // Preserve the earliest existing id so a correction updates the
-            // same row instead of duplicating it.
-            id: prior[0]?.id ?? crypto.randomUUID(),
-            eventId,
-            volunteerName: volunteerNameClean,
-            grade: grade.trim(),
-            eventName: event.customName ? event.customName : event.name,
-            customEventName: event.customName || null,
-            eventDate: event.date,
-            arrivalTime,
-            endTime,
-            hours,
-            comments: typeof comments === "string" ? comments.trim() : "",
-            submittedAt: new Date().toISOString(),
-          };
-
-          const submissions = [
-            ...current.submissions.filter((s) => !samePair(s)),
-            submission,
-          ];
-
-          const events = current.events.map((e) => {
-            if (e.id !== eventId) return e;
-            const attendance = Array.isArray(e.attendance)
-              ? [...e.attendance]
-              : [];
-            const idx = attendance.findIndex(
-              (a) => a.volunteerName === volunteerNameClean
-            );
-            if (idx >= 0) {
-              attendance[idx] = {
-                ...attendance[idx],
-                volunteerCheckout: true,
-              };
-            } else {
-              attendance.push({
-                volunteerName: volunteerNameClean,
-                staffCheckin: false,
-                volunteerCheckout: true,
-                selfAdded: true,
-              });
-            }
-            return { ...e, attendance };
-          });
-
-          return {
-            next: { ...current, submissions, events },
-            value: submission,
-          };
-        }
-      );
-
-      if (!savedSubmission) {
+      const result = await store.upsertSubmission({
+        eventId,
+        volunteerName,
+        grade,
+        arrivalTime,
+        endTime,
+        hours,
+        comments,
+      });
+      if (!result) {
         return res
           .status(400)
           .json({ errors: ["Selected event no longer exists"] });
       }
-      res.status(201).json({ submission: savedSubmission });
+      res.status(201).json({ submission: result.submission });
     } catch (err) {
       console.error("Failed to save submission", err);
       res.status(500).json({ error: "Failed to save submission" });
@@ -253,10 +348,11 @@ export function createRouter({
 
   // ---------- Events ----------
 
-  router.get("/events", async (_req, res) => {
+  router.get("/events", async (req, res) => {
     try {
-      const data = await readData();
-      res.json(data.events);
+      const events = await store.listEvents();
+      // Full attendance (codes, ids, timestamps) only for admins.
+      res.json(isAdminRequest(req) ? events : events.map(publicEvent));
     } catch (err) {
       console.error("Failed to read events", err);
       res.status(500).json({ error: "Failed to read events" });
@@ -276,161 +372,197 @@ export function createRouter({
     }
     if (errors.length > 0) return res.status(400).json({ errors });
 
-    const newEvent = {
-      id: crypto.randomUUID(),
-      name: name.trim(),
-      customName:
-        name === "Others - please specify" ? String(customName).trim() : null,
-      date,
-      createdAt: new Date().toISOString(),
-      attendance: [],
-    };
-
-    await writeData(async (current) => ({
-      ...current,
-      events: [...current.events, newEvent],
-    }));
-
-    res.status(201).json(newEvent);
+    try {
+      const event = await store.createEvent({
+        name: name.trim(),
+        customName:
+          name === "Others - please specify" ? String(customName).trim() : null,
+        date,
+      });
+      res.status(201).json(event);
+    } catch (err) {
+      console.error("Failed to create event", err);
+      res.status(500).json({ error: "Failed to create event" });
+    }
   });
 
   router.delete("/events/:id", requireAdmin, async (req, res) => {
-    const { id } = req.params;
-    await writeData(async (current) => ({
-      ...current,
-      events: current.events.filter((e) => e.id !== id),
-    }));
-    res.json({ ok: true });
+    try {
+      await store.deleteEvent(req.params.id);
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Failed to delete event", err);
+      res.status(500).json({ error: "Failed to delete event" });
+    }
   });
 
   router.post("/events/:id/attendance", requireAdmin, async (req, res) => {
-    const { id } = req.params;
     const { volunteerNames } = req.body || {};
     if (!Array.isArray(volunteerNames)) {
       return res.status(400).json({ error: "volunteerNames must be an array" });
     }
-
-    // The event is often created in the immediately-preceding request; under
-    // Netlify Blobs' eventual consistency it may not be visible on the first
-    // read, so retry until it appears (this is the reported "event does not
-    // exist" flow: create event → add volunteers).
-    const updatedEvent = await writeWithConsistencyRetry(writeData, (current) => {
-      if (!current.events.some((e) => e.id === id)) return null;
-      const events = current.events.map((e) => {
-        if (e.id !== id) return e;
-        const map = new Map();
-        for (const a of e.attendance || []) map.set(a.volunteerName, a);
-        for (const name of volunteerNames) {
-          if (typeof name !== "string") continue;
-          const existing = map.get(name);
-          if (existing) {
-            map.set(name, {
-              ...existing,
-              staffCheckin: true,
-              selfAdded: false,
-            });
-          } else {
-            map.set(name, {
-              volunteerName: name,
-              staffCheckin: true,
-              volunteerCheckout: false,
-              selfAdded: false,
-            });
-          }
-        }
-        return { ...e, attendance: Array.from(map.values()) };
-      });
-      return { next: { ...current, events }, value: events.find((e) => e.id === id) };
-    });
-
-    if (!updatedEvent)
-      return res.status(404).json({ error: "Event not found" });
-    res.json(updatedEvent);
+    try {
+      const event = await store.addAttendees(req.params.id, volunteerNames);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+      res.json(event);
+    } catch (err) {
+      console.error("Failed to add attendees", err);
+      res.status(500).json({ error: "Failed to add attendees" });
+    }
   });
 
   router.patch("/events/:id/attendance", requireAdmin, async (req, res) => {
-    const { id } = req.params;
-    const { volunteerName, staffCheckin, volunteerCheckout } = req.body || {};
+    const body = req.body || {};
+    const { volunteerName, staffCheckin, volunteerCheckout } = body;
     if (!volunteerName || typeof volunteerName !== "string") {
       return res.status(400).json({ error: "volunteerName is required" });
     }
+    const patch = {};
+    if (typeof staffCheckin === "boolean") patch.staffCheckin = staffCheckin;
+    if (typeof volunteerCheckout === "boolean")
+      patch.volunteerCheckout = volunteerCheckout;
+    // Manual time edits: a present key sets the value (ISO or null); an absent
+    // key leaves it untouched.
+    if ("checkinAt" in body) patch.checkinAt = normalizeIsoOrNull(body.checkinAt) ?? null;
+    if ("checkoutAt" in body) patch.checkoutAt = normalizeIsoOrNull(body.checkoutAt) ?? null;
 
-    let updatedEvent = null;
-    await writeData(async (current) => {
-      const events = current.events.map((e) => {
-        if (e.id !== id) return e;
-        const attendance = (e.attendance || []).map((a) => {
-          if (a.volunteerName !== volunteerName) return a;
-          return {
-            ...a,
-            staffCheckin:
-              typeof staffCheckin === "boolean" ? staffCheckin : a.staffCheckin,
-            volunteerCheckout:
-              typeof volunteerCheckout === "boolean"
-                ? volunteerCheckout
-                : a.volunteerCheckout,
-          };
-        });
-        const updated = { ...e, attendance };
-        updatedEvent = updated;
-        return updated;
-      });
-      return { ...current, events };
-    });
-
-    if (!updatedEvent)
-      return res.status(404).json({ error: "Event not found" });
-    res.json(updatedEvent);
+    try {
+      const event = await store.patchAttendance(
+        req.params.id,
+        volunteerName,
+        patch
+      );
+      if (!event) return res.status(404).json({ error: "Event not found" });
+      res.json(event);
+    } catch (err) {
+      console.error("Failed to update attendance", err);
+      res.status(500).json({ error: "Failed to update attendance" });
+    }
   });
 
   router.delete("/events/:id/attendance", requireAdmin, async (req, res) => {
-    const { id } = req.params;
     const { volunteerName } = req.body || {};
     if (!volunteerName || typeof volunteerName !== "string") {
       return res.status(400).json({ error: "volunteerName is required" });
     }
-
-    let updatedEvent = null;
-    await writeData(async (current) => {
-      const events = current.events.map((e) => {
-        if (e.id !== id) return e;
-        const updated = {
-          ...e,
-          attendance: (e.attendance || []).filter(
-            (a) => a.volunteerName !== volunteerName
-          ),
-        };
-        updatedEvent = updated;
-        return updated;
-      });
-      return { ...current, events };
-    });
-
-    if (!updatedEvent)
-      return res.status(404).json({ error: "Event not found" });
-    res.json(updatedEvent);
+    try {
+      const event = await store.removeAttendance(req.params.id, volunteerName);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+      res.json(event);
+    } catch (err) {
+      console.error("Failed to remove attendee", err);
+      res.status(500).json({ error: "Failed to remove attendee" });
+    }
   });
+
+  // ---------- QR check-in / check-out (admin scanner) ----------
+
+  async function handleScan(req, res, kind) {
+    const code = trimStr((req.body || {}).code, 120);
+    if (!code) return res.status(400).json({ error: "code is required" });
+    try {
+      const fn = kind === "checkin" ? store.checkInByCode : store.checkOutByCode;
+      const result = await fn(req.params.id, code);
+      if (!result.ok) {
+        if (result.reason === "unknown_event")
+          return res.status(404).json({ error: "Event not found" });
+        return res.status(404).json({
+          error: "No volunteer matches that QR code",
+          reason: "unknown_code",
+        });
+      }
+      res.json({
+        ok: true,
+        volunteer: result.volunteer,
+        attendance: result.attendance,
+        event: result.event,
+        alreadyDone: result.alreadyDone === true,
+      });
+    } catch (err) {
+      console.error(`Failed to ${kind}`, err);
+      res.status(500).json({ error: `Failed to ${kind}` });
+    }
+  }
+
+  router.post("/events/:id/checkin", requireAdmin, (req, res) =>
+    handleScan(req, res, "checkin")
+  );
+  router.post("/events/:id/checkout", requireAdmin, (req, res) =>
+    handleScan(req, res, "checkout")
+  );
 
   // ---------- Admin maintenance ----------
 
-  // Wipes all data and starts fresh. Useful when reset can't be done from the
-  // shell (e.g. on a serverless deploy).
   router.post("/admin/reset", requireAdmin, async (_req, res) => {
-    await writeData(async () => ({ submissions: [], events: [] }));
-    res.json({ ok: true });
+    try {
+      await store.reset();
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Failed to reset", err);
+      res.status(500).json({ error: "Failed to reset" });
+    }
   });
 
-  // Returns the full data file as a downloadable JSON, useful for backups
-  // when the data isn't on a server you can scp from.
   router.get("/admin/export", requireAdmin, async (_req, res) => {
-    const data = await readData();
-    const stamp = new Date().toISOString().slice(0, 10);
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="ela-tcya-backup-${stamp}.json"`
-    );
-    res.send(JSON.stringify(data, null, 2));
+    try {
+      const data = await store.exportAll();
+      const stamp = new Date().toISOString().slice(0, 10);
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="ela-tcya-backup-${stamp}.json"`
+      );
+      res.send(JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.error("Failed to export", err);
+      res.status(500).json({ error: "Failed to export" });
+    }
+  });
+
+  router.post("/admin/import", requireAdmin, async (req, res) => {
+    const body = req.body || {};
+    if (
+      !Array.isArray(body.events) &&
+      !Array.isArray(body.submissions) &&
+      !Array.isArray(body.volunteers)
+    ) {
+      return res.status(400).json({
+        error: "Provide at least one of: events, submissions, volunteers",
+      });
+    }
+    // Reject duplicate volunteer codes/ids up front (fail loud + identically on
+    // both stores) rather than letting Postgres silently drop or PK-violate.
+    if (Array.isArray(body.volunteers)) {
+      const codes = new Set();
+      const ids = new Set();
+      for (const v of body.volunteers) {
+        if (!v || typeof v !== "object") continue;
+        if (typeof v.code === "string") {
+          if (codes.has(v.code))
+            return res.status(400).json({ error: `Duplicate volunteer code in import: ${v.code}` });
+          codes.add(v.code);
+        }
+        if (typeof v.id === "string") {
+          if (ids.has(v.id))
+            return res.status(400).json({ error: `Duplicate volunteer id in import: ${v.id}` });
+          ids.add(v.id);
+        }
+      }
+    }
+    try {
+      const data = await store.importAll(body);
+      res.json({
+        ok: true,
+        counts: {
+          volunteers: data.volunteers.length,
+          events: data.events.length,
+          submissions: data.submissions.length,
+        },
+      });
+    } catch (err) {
+      console.error("Failed to import", err);
+      res.status(500).json({ error: "Failed to import data" });
+    }
   });
 
   return router;

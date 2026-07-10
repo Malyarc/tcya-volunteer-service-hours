@@ -1,6 +1,11 @@
-// Master list of registered volunteers. Keep this list sorted alphabetically
-// by first name; the table view sorts on this field as well.
-export const VOLUNTEERS: readonly string[] = [
+// Canonical roster used to seed the `volunteers` table on a fresh database.
+// These are the names the app shipped with (previously a hard-coded list in
+// the client). On first boot, each name is inserted with an auto-assigned
+// code (TCYA-0001, TCYA-0002, …) and blank email/phone/grade for staff to
+// fill in. Seeding is idempotent and only runs when the table is empty, so
+// editing this list later does NOT retroactively change existing rows — add
+// new volunteers through the admin UI instead.
+export const SEED_VOLUNTEERS = [
   "Aaron Tse",
   "Alan Huang",
   "Alex Yang Xiong",

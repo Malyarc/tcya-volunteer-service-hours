@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
-import type { VolunteerEvent } from "../../types";
-import { VOLUNTEERS } from "../../data/volunteers";
+import type { AttendanceEntry, Volunteer, VolunteerEvent } from "../../types";
 import {
+  formatClockFromIso,
   formatDateLong,
   getEventDisplayName,
+  isoToLocalInput,
+  localInputToIso,
   sortAttendance,
 } from "../../utils";
 import {
@@ -12,9 +14,12 @@ import {
   patchAttendee,
   removeAttendee,
 } from "../../api";
+import { ScannerModal } from "./ScannerModal";
 
 interface Props {
   event: VolunteerEvent;
+  rosterNames: string[];
+  volunteers: Volunteer[];
   onBack: () => void;
   onEventUpdated: (next: VolunteerEvent) => void;
   onEventDeleted: () => void;
@@ -22,6 +27,8 @@ interface Props {
 
 export function EventDetailPage({
   event,
+  rosterNames,
+  volunteers,
   onBack,
   onEventUpdated,
   onEventDeleted,
@@ -30,17 +37,18 @@ export function EventDetailPage({
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [editingRow, setEditingRow] = useState<string | null>(null);
 
   const { staff, selfAdded } = useMemo(() => sortAttendance(event), [event]);
 
-  // Volunteers available to add (i.e. not already in attendance).
   const availableVolunteers = useMemo(() => {
     const inList = new Set(event.attendance.map((a) => a.volunteerName));
     const q = pickerQuery.trim().toLowerCase();
-    return VOLUNTEERS.filter((n) => !inList.has(n)).filter((n) =>
-      q ? n.toLowerCase().includes(q) : true
-    );
-  }, [event.attendance, pickerQuery]);
+    return rosterNames
+      .filter((n) => !inList.has(n))
+      .filter((n) => (q ? n.toLowerCase().includes(q) : true));
+  }, [event.attendance, pickerQuery, rosterNames]);
 
   const stats = useMemo(() => {
     const total = event.attendance.length;
@@ -90,6 +98,21 @@ export function EventDetailPage({
     field: "staffCheckin" | "volunteerCheckout",
     next: boolean
   ) {
+    // Warn before un-confirming a fully-confirmed row — that quietly stops the
+    // volunteer's hours from counting.
+    if (!next) {
+      const row = event.attendance.find((a) => a.volunteerName === volunteerName);
+      if (
+        row &&
+        row.staffCheckin &&
+        row.volunteerCheckout &&
+        !window.confirm(
+          `Un-check ${volunteerName}? Their attendance is confirmed — un-checking will stop their hours for this event from counting until both are green again.`
+        )
+      ) {
+        return;
+      }
+    }
     try {
       setBusy(true);
       setError(null);
@@ -99,6 +122,28 @@ export function EventDetailPage({
       onEventUpdated(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveTimes(
+    volunteerName: string,
+    patch: { checkinAt?: string | null; checkoutAt?: string | null }
+  ) {
+    // Nothing edited — just close (don't send a no-op / destructive PATCH).
+    if (Object.keys(patch).length === 0) {
+      setEditingRow(null);
+      return;
+    }
+    try {
+      setBusy(true);
+      setError(null);
+      const updated = await patchAttendee(event.id, volunteerName, patch);
+      onEventUpdated(updated);
+      setEditingRow(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save times.");
     } finally {
       setBusy(false);
     }
@@ -121,7 +166,7 @@ export function EventDetailPage({
   async function handleDeleteEvent() {
     if (
       !window.confirm(
-        `Delete this event? Submissions linked to it will remain in the data file but won't count toward hours.`
+        `Delete this event? Submissions linked to it will remain in the database but won't count toward hours.`
       )
     )
       return;
@@ -144,15 +189,7 @@ export function EventDetailPage({
             onClick={onBack}
             className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur-sm transition hover:bg-white/25"
           >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-3.5 w-3.5"
-            >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
               <path d="m15 18-6-6 6-6" />
             </svg>
             Back to Dashboard
@@ -169,35 +206,44 @@ export function EventDetailPage({
                 {formatDateLong(event.date)}
               </p>
             </div>
-            <button
-              onClick={handleDeleteEvent}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-red-500/90 px-3 py-1.5 text-xs font-semibold text-white shadow ring-1 ring-red-400/40 transition hover:bg-red-500"
-              disabled={busy}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-3.5 w-3.5"
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setScannerOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-brand-700 shadow ring-1 ring-white/40 transition hover:bg-brand-50"
               >
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-                <path d="M10 11v6M14 11v6" />
-                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-              </svg>
-              Delete Event
-            </button>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                  <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+                  <line x1="7" y1="12" x2="17" y2="12" />
+                </svg>
+                Scan QR
+              </button>
+              <button
+                onClick={handleDeleteEvent}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-500/90 px-3 py-1.5 text-xs font-semibold text-white shadow ring-1 ring-red-400/40 transition hover:bg-red-500"
+                disabled={busy}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                  <path d="M10 11v6M14 11v6" />
+                  <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                </svg>
+                Delete Event
+              </button>
+            </div>
           </div>
         </div>
 
         <div className="grid grid-cols-2 gap-3 px-6 py-4 sm:grid-cols-4">
           <Stat label="Total Attendees" value={stats.total} />
-          <Stat label="Fully Confirmed" value={stats.both} tone="green" />
+          <Stat label="Attendance Confirmed" value={stats.both} tone="green" />
           <Stat label="Awaiting Volunteer" value={stats.onlyStaff} />
           <Stat label="Awaiting Staff" value={stats.onlyVol} tone="amber" />
+        </div>
+        <div className="border-t border-slate-100 px-6 py-2.5 text-xs text-slate-500">
+          <span className="font-semibold text-slate-600">Note:</span> confirming attendance
+          (both green) marks a volunteer present. Their <em>service hours</em> are credited
+          only once they also submit their arrival / end times via “Log Volunteer Hours.”
         </div>
       </div>
 
@@ -207,7 +253,7 @@ export function EventDetailPage({
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1.5fr]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1.6fr]">
         {/* Volunteer picker */}
         <section className="card overflow-hidden">
           <div className="border-b border-slate-100 px-5 py-4">
@@ -215,20 +261,19 @@ export function EventDetailPage({
               Add Volunteers
             </h2>
             <p className="text-xs text-slate-500">
-              Select volunteers to add to the attendance list.
+              Pre-register volunteers, or use{" "}
+              <button
+                onClick={() => setScannerOpen(true)}
+                className="font-semibold text-brand-700 hover:underline"
+              >
+                Scan QR
+              </button>{" "}
+              to check them in live.
             </p>
           </div>
           <div className="px-5 pb-2 pt-3">
             <div className="relative">
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
-              >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400">
                 <circle cx="11" cy="11" r="8" />
                 <path d="m21 21-4.35-4.35" />
               </svg>
@@ -244,9 +289,7 @@ export function EventDetailPage({
           <div className="max-h-[420px] overflow-y-auto px-3 pb-3">
             {availableVolunteers.length === 0 ? (
               <div className="px-2 py-8 text-center text-sm text-slate-500">
-                {pickerQuery
-                  ? "No matches."
-                  : "All volunteers are already on the list."}
+                {pickerQuery ? "No matches." : "All volunteers are already on the list."}
               </div>
             ) : (
               <ul className="divide-y divide-slate-100">
@@ -289,39 +332,42 @@ export function EventDetailPage({
 
         {/* Attendance table */}
         <section className="card overflow-hidden">
-          <div className="border-b border-slate-100 px-5 py-4">
-            <h2 className="text-base font-semibold text-slate-900">
-              Attendance List
-            </h2>
-            <p className="text-xs text-slate-500">
-              Click an icon to toggle. Hours count only when both are green.
-            </p>
+          <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">
+                Attendance List
+              </h2>
+              <p className="text-xs text-slate-500">
+                Toggle a status or edit check-in / out times. Both green =
+                attendance confirmed (hours also need the volunteer's submitted times).
+              </p>
+            </div>
+            <button
+              onClick={() => setScannerOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-brand-700"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+                <line x1="7" y1="12" x2="17" y2="12" />
+              </svg>
+              Scan QR
+            </button>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-slate-100 text-sm">
               <thead className="bg-slate-50/70">
                 <tr>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Volunteer
-                  </th>
-                  <th className="px-4 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Staff Check-in
-                  </th>
-                  <th className="px-4 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Volunteer Check-out
-                  </th>
-                  <th className="w-10" />
+                  <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Volunteer</th>
+                  <th className="px-4 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Check-in</th>
+                  <th className="px-4 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Check-out</th>
+                  <th className="w-16" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {staff.length === 0 && selfAdded.length === 0 && (
                   <tr>
-                    <td
-                      colSpan={4}
-                      className="px-4 py-10 text-center text-sm text-slate-500"
-                    >
-                      No attendees yet. Add volunteers from the panel on the
-                      left, or wait for them to submit their hours.
+                    <td colSpan={4} className="px-4 py-10 text-center text-sm text-slate-500">
+                      No attendees yet. Add volunteers, scan their QR codes, or wait for them to submit their hours.
                     </td>
                   </tr>
                 )}
@@ -329,12 +375,14 @@ export function EventDetailPage({
                 {staff.map((a) => (
                   <AttendanceRow
                     key={a.volunteerName}
-                    volunteerName={a.volunteerName}
-                    staffCheckin={a.staffCheckin}
-                    volunteerCheckout={a.volunteerCheckout}
+                    entry={a}
                     busy={busy}
+                    editing={editingRow === a.volunteerName}
                     onToggle={handleToggleCheck}
                     onRemove={handleRemove}
+                    onEdit={() => setEditingRow(a.volunteerName)}
+                    onCancelEdit={() => setEditingRow(null)}
+                    onSaveTimes={handleSaveTimes}
                   />
                 ))}
 
@@ -342,15 +390,7 @@ export function EventDetailPage({
                   <tr>
                     <td colSpan={4} className="bg-amber-50/60 px-4 py-2">
                       <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-amber-800">
-                        <svg
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          className="h-3.5 w-3.5"
-                        >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
                           <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
                           <line x1="12" y1="9" x2="12" y2="13" />
                           <line x1="12" y1="17" x2="12.01" y2="17" />
@@ -364,12 +404,14 @@ export function EventDetailPage({
                 {selfAdded.map((a) => (
                   <AttendanceRow
                     key={a.volunteerName}
-                    volunteerName={a.volunteerName}
-                    staffCheckin={a.staffCheckin}
-                    volunteerCheckout={a.volunteerCheckout}
+                    entry={a}
                     busy={busy}
+                    editing={editingRow === a.volunteerName}
                     onToggle={handleToggleCheck}
                     onRemove={handleRemove}
+                    onEdit={() => setEditingRow(a.volunteerName)}
+                    onCancelEdit={() => setEditingRow(null)}
+                    onSaveTimes={handleSaveTimes}
                   />
                 ))}
               </tbody>
@@ -377,74 +419,169 @@ export function EventDetailPage({
           </div>
         </section>
       </div>
+
+      <ScannerModal
+        open={scannerOpen}
+        event={event}
+        volunteers={volunteers}
+        onClose={() => setScannerOpen(false)}
+        onScanned={(updated) => onEventUpdated(updated)}
+      />
     </div>
   );
 }
 
 function AttendanceRow({
-  volunteerName,
-  staffCheckin,
-  volunteerCheckout,
+  entry,
   busy,
+  editing,
   onToggle,
   onRemove,
+  onEdit,
+  onCancelEdit,
+  onSaveTimes,
 }: {
-  volunteerName: string;
-  staffCheckin: boolean;
-  volunteerCheckout: boolean;
+  entry: AttendanceEntry;
   busy: boolean;
+  editing: boolean;
   onToggle: (
     name: string,
     field: "staffCheckin" | "volunteerCheckout",
     next: boolean
   ) => void;
   onRemove: (name: string) => void;
+  onEdit: () => void;
+  onCancelEdit: () => void;
+  onSaveTimes: (
+    name: string,
+    patch: { checkinAt?: string | null; checkoutAt?: string | null }
+  ) => void;
 }) {
+  const [inVal, setInVal] = useState(isoToLocalInput(entry.checkinAt));
+  const [outVal, setOutVal] = useState(isoToLocalInput(entry.checkoutAt));
+
+  // Re-sync the editor when opening it for this row.
+  function startEdit() {
+    setInVal(isoToLocalInput(entry.checkinAt));
+    setOutVal(isoToLocalInput(entry.checkoutAt));
+    onEdit();
+  }
+
   return (
-    <tr className="hover:bg-slate-50/60">
-      <td className="px-4 py-2.5 font-medium text-slate-900">
-        {volunteerName}
-      </td>
-      <td className="px-4 py-2.5 text-center">
-        <CheckToggle
-          checked={staffCheckin}
-          disabled={busy}
-          onClick={() => onToggle(volunteerName, "staffCheckin", !staffCheckin)}
-          ariaLabel={`Toggle staff check-in for ${volunteerName}`}
-        />
-      </td>
-      <td className="px-4 py-2.5 text-center">
-        <CheckToggle
-          checked={volunteerCheckout}
-          disabled={busy}
-          onClick={() =>
-            onToggle(volunteerName, "volunteerCheckout", !volunteerCheckout)
-          }
-          ariaLabel={`Toggle volunteer check-out for ${volunteerName}`}
-        />
-      </td>
-      <td className="px-2 py-2.5 text-right">
-        <button
-          onClick={() => onRemove(volunteerName)}
-          disabled={busy}
-          className="rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
-          aria-label={`Remove ${volunteerName}`}
-          title="Remove from event"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="h-4 w-4"
-          >
-            <path d="M18 6 6 18M6 6l12 12" />
-          </svg>
-        </button>
-      </td>
-    </tr>
+    <>
+      <tr className="hover:bg-slate-50/60">
+        <td className="px-4 py-2.5">
+          <div className="font-medium text-slate-900">{entry.volunteerName}</div>
+          {entry.code && (
+            <div className="text-[11px] font-medium text-slate-400">{entry.code}</div>
+          )}
+        </td>
+        <td className="px-4 py-2.5 text-center">
+          <CheckToggle
+            checked={entry.staffCheckin}
+            disabled={busy}
+            onClick={() => onToggle(entry.volunteerName, "staffCheckin", !entry.staffCheckin)}
+            ariaLabel={`Toggle staff check-in for ${entry.volunteerName}`}
+          />
+          {entry.checkinAt && (
+            <div className="mt-1 text-[11px] text-slate-500">{formatClockFromIso(entry.checkinAt)}</div>
+          )}
+        </td>
+        <td className="px-4 py-2.5 text-center">
+          <CheckToggle
+            checked={entry.volunteerCheckout}
+            disabled={busy}
+            onClick={() => onToggle(entry.volunteerName, "volunteerCheckout", !entry.volunteerCheckout)}
+            ariaLabel={`Toggle volunteer check-out for ${entry.volunteerName}`}
+          />
+          {entry.checkoutAt && (
+            <div className="mt-1 text-[11px] text-slate-500">{formatClockFromIso(entry.checkoutAt)}</div>
+          )}
+        </td>
+        <td className="px-2 py-2.5 text-right">
+          <div className="inline-flex items-center gap-0.5">
+            <button
+              onClick={startEdit}
+              disabled={busy}
+              className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              aria-label={`Edit times for ${entry.volunteerName}`}
+              title="Edit check-in / out times"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+              </svg>
+            </button>
+            <button
+              onClick={() => onRemove(entry.volunteerName)}
+              disabled={busy}
+              className="rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
+              aria-label={`Remove ${entry.volunteerName}`}
+              title="Remove from event"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </td>
+      </tr>
+      {editing && (
+        <tr className="bg-slate-50/70">
+          <td colSpan={4} className="px-4 py-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  Check-in time
+                </label>
+                <input
+                  type="datetime-local"
+                  className="input py-1.5 text-sm"
+                  value={inVal}
+                  onChange={(e) => setInVal(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  Check-out time
+                </label>
+                <input
+                  type="datetime-local"
+                  className="input py-1.5 text-sm"
+                  value={outVal}
+                  onChange={(e) => setOutVal(e.target.value)}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    // Send ONLY fields the admin actually changed, so an
+                    // unedited (or stale-blank) field can't overwrite a real
+                    // timestamp, and QR-stamped seconds aren't truncated.
+                    const origIn = isoToLocalInput(entry.checkinAt);
+                    const origOut = isoToLocalInput(entry.checkoutAt);
+                    const patch: { checkinAt?: string | null; checkoutAt?: string | null } = {};
+                    if (inVal !== origIn) patch.checkinAt = localInputToIso(inVal);
+                    if (outVal !== origOut) patch.checkoutAt = localInputToIso(outVal);
+                    onSaveTimes(entry.volunteerName, patch);
+                  }}
+                  className="btn-primary py-1.5 text-sm"
+                  disabled={busy}
+                >
+                  Save times
+                </button>
+                <button onClick={onCancelEdit} className="btn-secondary py-1.5 text-sm" disabled={busy}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400">
+              Setting a time also marks that side as checked. Clear a field to remove its time.
+            </p>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -472,27 +609,11 @@ function CheckToggle({
       } disabled:cursor-not-allowed disabled:opacity-60`}
     >
       {checked ? (
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="h-4 w-4"
-        >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
           <path d="M20 6 9 17l-5-5" />
         </svg>
       ) : (
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="h-4 w-4"
-        >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
           <path d="M18 6 6 18M6 6l12 12" />
         </svg>
       )}

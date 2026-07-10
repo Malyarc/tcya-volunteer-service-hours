@@ -5,6 +5,9 @@ import {
   isCountableSubmission,
   dedupeSubmissionsByEvent,
   buildSummaries,
+  formatClockFromIso,
+  isoToLocalInput,
+  localInputToIso,
 } from "./utils";
 import type { Submission, VolunteerEvent } from "./types";
 
@@ -121,6 +124,32 @@ describe("dedupeSubmissionsByEvent", () => {
       sub({ id: "4", eventId: "" }),
     ]);
     expect(out).toHaveLength(4);
+  });
+});
+
+describe("check-in/out timestamp helpers", () => {
+  it("formatClockFromIso returns a clock time for valid input and empty for junk", () => {
+    // Exact rendering is locale/tz-dependent; assert it produces a non-empty
+    // clock-looking string and is empty for bad input.
+    expect(formatClockFromIso("2026-03-15T17:30:00.000Z")).toMatch(/\d/);
+    expect(formatClockFromIso(null)).toBe("");
+    expect(formatClockFromIso("")).toBe("");
+    expect(formatClockFromIso("not-a-date")).toBe("");
+  });
+
+  it("isoToLocalInput <-> localInputToIso round-trip preserves the instant", () => {
+    const iso = "2026-03-15T17:30:00.000Z";
+    const local = isoToLocalInput(iso); // 'YYYY-MM-DDTHH:MM' in local tz
+    expect(local).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    const back = localInputToIso(local);
+    // Round-trips to the same minute (seconds are dropped by the input format).
+    expect(back).toBe("2026-03-15T17:30:00.000Z");
+  });
+
+  it("localInputToIso returns null for blank, isoToLocalInput empty for null", () => {
+    expect(localInputToIso("")).toBeNull();
+    expect(isoToLocalInput(null)).toBe("");
+    expect(isoToLocalInput(undefined)).toBe("");
   });
 });
 

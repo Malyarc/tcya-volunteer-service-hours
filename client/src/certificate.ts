@@ -31,6 +31,7 @@
 import type { jsPDF } from "jspdf";
 import type { Submission } from "./types";
 import { displayEventName, formatHours } from "./utils";
+import { safeFileName } from "./qr";
 
 const LOGO_URL = "/cert-logo.png";
 const SIGNATURE_URL = "/cert-signature.png";
@@ -75,10 +76,6 @@ function formatYmdLong(ymd: string): string {
   return formatLetterDate(new Date(y, m - 1, d));
 }
 
-function safeFileName(name: string): string {
-  // Strip filesystem-unsafe characters but keep spaces and apostrophes-as-dash.
-  return name.replace(/[\\/:*?"<>|]/g, "").trim();
-}
 
 interface BuildArgs {
   volunteerName: string;
