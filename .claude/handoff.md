@@ -2,7 +2,50 @@
 
 Single source of truth for the project's current state. Last updated: 2026-07-10.
 
-## Round 3 (latest) — from-scratch code-review, security + a11y + tests
+## Round 4 (latest) — data durability: never lose data again
+
+**Root cause of "events don't persist":** NOT an app bug. The app stores events
+durably in Neon (verified by reading Neon directly + confirming an event survived
+minutes later across instances). The loss came from **destructive testing against
+prod** — the parity suite + reset scripts were pointed at the production Neon DB to
+"leave it pristine" after each session, wiping real events. That practice is now
+forbidden and guarded.
+
+Hardening (all landed, green bar passing):
+
+- **Fail-closed store** (`create-store.js`): resolves the DB URL from
+  `DATABASE_URL || NETLIFY_DATABASE_URL || DATABASE_URL_UNPOOLED ||
+  NETLIFY_DATABASE_URL_UNPOOLED`; in a prod-like env with no URL it THROWS instead
+  of silently using the ephemeral in-memory store. `api.mjs` catches → 503, never
+  serves RAM. (Fixes the silent-in-memory landmine + the circular prod guard.)
+- **`GET /api/health`** → `{ ok, backend, persistent, dbOk }` with a live `SELECT 1`
+  probe. `persistent:false` = non-durable deploy.
+- **Non-destructive import**: `importAll` (both stores) only wipes+replaces the
+  categories present in the payload — a volunteers-only restore no longer nukes
+  events/hours.
+- **Prod-wipe guards**: parity suite throws if `TEST_DATABASE_URL` == `DATABASE_URL`
+  or lacks a throwaway marker (override `CONFIRM_TRUNCATE=1`); `reset.js` needs
+  `CONFIRM_RESET=1`; `/admin/reset` needs `{"confirm":"RESET"}` + logs counts.
+- **Client "looks-wiped" fixes**: `refresh()` uses `Promise.allSettled` (one failed
+  fetch no longer blanks events); `checkAdminSession` returns `"unknown"` on
+  transient 5xx/network (no spurious logout); admin tab persists across reload.
+- **Green:** server memory **76 pass** + create-store/hours unit tests, client
+  **25 pass**, build clean, parity-guard refusal verified.
+
+**DEFERRED (needs user):** run live-Postgres parity against a **throwaway**
+`TEST_DATABASE_URL` (I will not wipe prod to run it). See "User actions" below.
+
+### User actions (owns Netlify env + Neon)
+
+1. **Confirm `DATABASE_URL` targets the durable Neon PRIMARY branch** (not an
+   expiring/preview branch) and is scoped to ALL Netlify deploy contexts.
+2. **Provision a throwaway Neon branch/DB** with `test`/`scratch` in its name; use
+   its URL as `TEST_DATABASE_URL` for the parity gate. Never use the prod string.
+3. **Set a strong `ADMIN_PASSWORD`** (+ `SESSION_SECRET`) — still `1013` on prod.
+4. **Enable Neon PITR / automated backups** on the primary as an app-independent
+   safety net.
+
+## Round 3 — from-scratch code-review, security + a11y + tests
 
 Full multi-agent review of everything, findings applied, re-verified, deployed.
 

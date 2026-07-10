@@ -482,6 +482,12 @@ export function createPostgresStore(connectionString) {
     ]);
   }
 
+  // Cheap liveness probe for /health — proves the DB is actually reachable.
+  async function ping() {
+    await sql`SELECT 1`;
+    return true;
+  }
+
   async function exportAll() {
     await ensureReady();
     const [volunteers, events, submissions] = await Promise.all([
@@ -494,10 +500,13 @@ export function createPostgresStore(connectionString) {
 
   async function importAll(payload) {
     await ensureReady();
-    const events = Array.isArray(payload?.events) ? payload.events : [];
-    const submissionsRaw = Array.isArray(payload?.submissions)
-      ? payload.submissions
-      : [];
+    // Only the categories PRESENT in the payload are wiped + replaced. A partial
+    // import (e.g. a volunteers-only restore) must NOT delete event history —
+    // that footgun previously turned a partial restore into a full wipe.
+    const hasEvents = Array.isArray(payload?.events);
+    const hasSubs = Array.isArray(payload?.submissions);
+    const events = hasEvents ? payload.events : [];
+    const submissionsRaw = hasSubs ? payload.submissions : [];
     const volunteers = Array.isArray(payload?.volunteers)
       ? payload.volunteers
       : null;
@@ -518,11 +527,14 @@ export function createPostgresStore(connectionString) {
     }
     const submissions = [...byPair.values(), ...legacy];
 
-    const stmts = [
-      sql`DELETE FROM submissions`,
-      sql`DELETE FROM attendance`,
-      sql`DELETE FROM events`,
-    ];
+    const stmts = [];
+    // Deleting events cascades to attendance (FK ON DELETE CASCADE); the
+    // explicit attendance delete is belt-and-suspenders.
+    if (hasSubs) stmts.push(sql`DELETE FROM submissions`);
+    if (hasEvents) {
+      stmts.push(sql`DELETE FROM attendance`);
+      stmts.push(sql`DELETE FROM events`);
+    }
 
     if (volunteers && volunteers.length > 0) {
       stmts.push(sql`DELETE FROM volunteers`);
@@ -591,6 +603,22 @@ export function createPostgresStore(connectionString) {
         ON CONFLICT (event_id, volunteer_name) DO NOTHING`);
     }
 
+    // If the roster was re-imported, re-link any surviving attendance rows to it
+    // by name. `DELETE FROM volunteers` above nulled attendance.volunteer_id via
+    // the ON DELETE SET NULL FK; a partial import that KEPT attendance (events
+    // not in the payload) must restore the link so the QR code still resolves —
+    // matching the memory store, which keeps the link through preserved ids.
+    if (volunteers && volunteers.length > 0) {
+      stmts.push(sql`
+        UPDATE attendance a
+        SET volunteer_id = (
+          SELECT v.id FROM volunteers v
+          WHERE v.name = a.volunteer_name
+          ORDER BY v.created_at ASC, v.code ASC
+          LIMIT 1
+        )`);
+    }
+
     await sql.transaction(stmts);
     return exportAll();
   }
@@ -616,6 +644,7 @@ export function createPostgresStore(connectionString) {
     removeAttendance,
     listSubmissions,
     reset,
+    ping,
     exportAll,
     importAll,
   };

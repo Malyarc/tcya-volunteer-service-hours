@@ -504,17 +504,24 @@ export function createMemoryStore(seed) {
   }
 
   async function importAll(payload) {
-    const inEvents = Array.isArray(payload?.events) ? payload.events : [];
-    const inSubsRaw = Array.isArray(payload?.submissions)
-      ? payload.submissions
-      : [];
+    // Only the categories PRESENT in the payload are wiped + replaced (mirrors
+    // the Postgres store): a partial import (e.g. volunteers-only) must NOT
+    // delete event history.
+    const hasEvents = Array.isArray(payload?.events);
+    const hasSubs = Array.isArray(payload?.submissions);
+    const inEvents = hasEvents ? payload.events : [];
+    const inSubsRaw = hasSubs ? payload.submissions : [];
     const inVols = Array.isArray(payload?.volunteers)
       ? payload.volunteers
       : null;
 
-    events = [];
-    attendance = [];
-    submissions = [];
+    if (hasEvents) {
+      events = [];
+      attendance = [];
+    }
+    if (hasSubs) {
+      submissions = [];
+    }
 
     if (inVols && inVols.length > 0) {
       volunteers = inVols.map((v) => ({
@@ -603,9 +610,16 @@ export function createMemoryStore(seed) {
     /* no-op for memory */
   }
 
+  // Liveness probe for /health. The in-memory store is always "reachable" — the
+  // durability signal (persistent:false) comes from the backend name, not this.
+  async function ping() {
+    return true;
+  }
+
   return {
     kind: "memory",
     ensureReady,
+    ping,
     listVolunteers,
     getVolunteer,
     getVolunteerByCode,

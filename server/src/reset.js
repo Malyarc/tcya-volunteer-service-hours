@@ -24,6 +24,25 @@ if (backend !== "postgres") {
   process.exit(1);
 }
 
+// Guard against an accidental production wipe. This DELETES all events,
+// attendance, and derived hours on whatever DATABASE_URL points at — which is
+// almost always production. Require an explicit opt-in.
+if (process.env.CONFIRM_RESET !== "1") {
+  const host = (() => {
+    try {
+      return new URL(process.env.DATABASE_URL).host;
+    } catch {
+      return "(unparseable DATABASE_URL)";
+    }
+  })();
+  console.error(
+    `Refusing to reset: this permanently deletes ALL events/attendance/submissions on ${host} ` +
+      "(the roster is kept; a backup is written first). If you are CERTAIN this is a throwaway/test " +
+      "database and not production, re-run with CONFIRM_RESET=1."
+  );
+  process.exit(1);
+}
+
 try {
   // Back up first.
   const data = await store.exportAll();

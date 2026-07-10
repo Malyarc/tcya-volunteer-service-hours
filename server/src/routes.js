@@ -61,6 +61,9 @@ function publicEvent(event) {
 
 export function createRouter({
   store,
+  // The active storage backend ("postgres" | "memory" | "unknown"), surfaced by
+  // /health so a non-durable deploy is detectable by any monitor.
+  backend = "unknown",
   adminUsername,
   adminPassword,
   sessionSecret,
@@ -138,8 +141,23 @@ export function createRouter({
 
   const router = express.Router();
 
-  router.get("/health", (_req, res) => {
-    res.json({ ok: true });
+  // Health + durability signal. Reports the active backend and whether it's a
+  // persistent store, and actively probes the database so a "Postgres is
+  // configured but unreachable" state returns 503 instead of a green light.
+  // `persistent:false` (the in-memory store) is the tell-tale for a deploy that
+  // would silently lose data — monitor this in production.
+  router.get("/health", async (_req, res) => {
+    const persistent = backend === "postgres";
+    let dbOk = true;
+    try {
+      if (typeof store.ping === "function") await store.ping();
+    } catch (err) {
+      dbOk = false;
+      console.error("Health probe: storage unreachable —", err?.message || err);
+    }
+    res
+      .status(dbOk ? 200 : 503)
+      .json({ ok: dbOk, backend, persistent, dbOk });
   });
 
   // ---------- Auth ----------
@@ -461,10 +479,36 @@ export function createRouter({
 
   // ---------- Admin maintenance ----------
 
-  router.post("/admin/reset", requireAdmin, async (_req, res) => {
+  router.post("/admin/reset", requireAdmin, async (req, res) => {
+    // Reset permanently deletes ALL events, attendance, and derived hours (the
+    // roster is kept). Require an explicit typed confirmation so it can't be
+    // triggered by an accidental/replayed request. Callers should export a
+    // backup (GET /admin/export) first.
+    const confirm = (req.body && req.body.confirm) || "";
+    if (confirm !== "RESET") {
+      return res.status(400).json({
+        error:
+          'Reset requires explicit confirmation. Send {"confirm":"RESET"}. This permanently deletes all events, attendance, and derived service hours (the volunteer roster is preserved). Export a backup with GET /api/admin/export first.',
+      });
+    }
     try {
+      // Snapshot the pre-wipe counts for the audit log (the HTTP path has no
+      // filesystem to write a backup file to, unlike the CLI reset script).
+      let before = null;
+      try {
+        const snap = await store.exportAll();
+        before = {
+          events: snap.events.length,
+          submissions: snap.submissions.length,
+        };
+        console.warn(
+          `ADMIN RESET: wiping ${before.events} events + ${before.submissions} submissions (roster kept).`
+        );
+      } catch {
+        /* non-fatal: proceed with the reset even if the snapshot failed */
+      }
       await store.reset();
-      res.json({ ok: true });
+      res.json({ ok: true, wiped: before });
     } catch (err) {
       console.error("Failed to reset", err);
       res.status(500).json({ error: "Failed to reset" });

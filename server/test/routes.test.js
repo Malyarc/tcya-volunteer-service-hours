@@ -37,6 +37,7 @@ async function withServer(run) {
     "/api",
     createRouter({
       store,
+      backend: "memory",
       adminUsername: "admin",
       adminPassword: "1013",
       sessionSecret: deriveSessionSecret("admin", "1013"),

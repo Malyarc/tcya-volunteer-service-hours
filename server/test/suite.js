@@ -568,7 +568,7 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       await makeEvent(api, auth);
       const rosterBefore = (await api.get("/api/volunteers", auth)).body.length;
-      const r = await api.send("POST", "/api/admin/reset", undefined, auth);
+      const r = await api.send("POST", "/api/admin/reset", { confirm: "RESET" }, auth);
       assert.equal(r.status, 200);
       assert.equal((await api.get("/api/events")).body.length, 0);
       assert.equal((await api.get("/api/submissions")).body.length, 0);
@@ -577,6 +577,64 @@ export function runSuite(withServer, label) {
         rosterBefore,
         "roster is preserved across reset"
       );
+    });
+  });
+
+  test(name("admin reset REFUSES without an explicit confirmation (guards against accidental wipes)"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      await makeEvent(api, auth);
+      // No confirmation -> 400, nothing touched.
+      const noConfirm = await api.send("POST", "/api/admin/reset", {}, auth);
+      assert.equal(noConfirm.status, 400);
+      assert.match(noConfirm.body.error, /confirm/i);
+      const wrong = await api.send("POST", "/api/admin/reset", { confirm: "yes" }, auth);
+      assert.equal(wrong.status, 400);
+      assert.equal(
+        (await api.get("/api/events")).body.length,
+        1,
+        "events untouched when the wipe is not confirmed"
+      );
+    });
+  });
+
+  test(name("import with a volunteers-only payload PRESERVES existing events + hours (no accidental wipe)"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
+      );
+      assert.equal((await api.get("/api/events", auth)).body.length, 1);
+      assert.equal((await api.get("/api/submissions", auth)).body.length, 1);
+      // Restore ONLY the roster — must NOT delete events/attendance/submissions.
+      const vols = (await api.get("/api/volunteers", auth)).body;
+      const imp = await api.send("POST", "/api/admin/import", { volunteers: vols }, auth);
+      assert.equal(imp.status, 200);
+      assert.equal(
+        (await api.get("/api/events", auth)).body.length,
+        1,
+        "events survive a volunteers-only import"
+      );
+      assert.equal(
+        (await api.get("/api/submissions", auth)).body.length,
+        1,
+        "derived hours survive a volunteers-only import"
+      );
+    });
+  });
+
+  test(name("GET /health reports the storage backend + durability + a live DB probe"), async () => {
+    await withServer(async (api) => {
+      const r = await api.get("/api/health");
+      assert.equal(r.status, 200);
+      assert.equal(r.body.ok, true);
+      assert.equal(r.body.dbOk, true);
+      assert.equal(typeof r.body.backend, "string");
+      assert.equal(typeof r.body.persistent, "boolean");
+      // persistent must be true exactly when the backend is postgres.
+      assert.equal(r.body.persistent, r.body.backend === "postgres");
     });
   });
 

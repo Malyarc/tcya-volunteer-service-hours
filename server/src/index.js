@@ -45,6 +45,7 @@ app.use(
   "/api",
   createRouter({
     store,
+    backend,
     adminUsername: ADMIN_USERNAME,
     adminPassword: ADMIN_PASSWORD,
     sessionSecret: SESSION_SECRET,

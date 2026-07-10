@@ -48,28 +48,43 @@ export default function App() {
 
   const [isAdmin, setIsAdmin] = useState<boolean>(() => isAdminLoggedIn());
   const [view, setView] = useState<View>({ kind: "home" });
-  const [adminTab, setAdminTab] = useState<AdminTab>("roster");
+  // Remember the last admin tab across reloads so a freshly created event isn't
+  // hidden behind the default "roster" tab after a refresh.
+  const [adminTab, setAdminTab] = useState<AdminTab>(() => {
+    try {
+      const saved = sessionStorage.getItem("ela-tcya-admin-tab");
+      if (saved === "roster" || saved === "volunteers" || saved === "events") {
+        return saved;
+      }
+    } catch {
+      /* sessionStorage unavailable */
+    }
+    return "roster";
+  });
 
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
   const [createEventOpen, setCreateEventOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    try {
-      setError(null);
-      const [subs, evs, ros] = await Promise.all([
-        fetchSubmissions(),
-        fetchEvents(),
-        fetchRoster(),
-      ]);
-      setSubmissions(subs);
-      setEvents(evs);
-      setRoster(ros);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load data.");
-    } finally {
-      setLoading(false);
-    }
+    // Load each dataset independently: a transient failure of ONE fetch (e.g. a
+    // cold-start 500 on /submissions) must not discard a successful /events
+    // load and blank the events panel — that made persisted data look "wiped."
+    const [subsR, evsR, rosR] = await Promise.allSettled([
+      fetchSubmissions(),
+      fetchEvents(),
+      fetchRoster(),
+    ]);
+    if (subsR.status === "fulfilled") setSubmissions(subsR.value);
+    if (evsR.status === "fulfilled") setEvents(evsR.value);
+    if (rosR.status === "fulfilled") setRoster(rosR.value);
+    const anyFailed = [subsR, evsR, rosR].some((r) => r.status === "rejected");
+    setError(
+      anyFailed
+        ? "Some data couldn't be refreshed just now — showing the most recent data. Retrying may help."
+        : null
+    );
+    setLoading(false);
   }, []);
 
   const refreshVolunteers = useCallback(async () => {
@@ -91,9 +106,12 @@ export default function App() {
     }
     let cancelled = false;
     (async () => {
-      const ok = await checkAdminSession();
+      const status = await checkAdminSession();
       if (cancelled) return;
-      if (!ok) {
+      // Only log out on a CONFIRMED non-admin (explicit 401/403). A transient
+      // "unknown" (cold-start 5xx / network blip) keeps the session so the admin
+      // isn't spuriously ejected — which looked like "everything got wiped."
+      if (status === false) {
         clearAdminToken();
         setIsAdmin(false);
       } else {
@@ -135,6 +153,14 @@ export default function App() {
     window.addEventListener("ela-tcya-token-cleared", onCleared);
     return () => window.removeEventListener("ela-tcya-token-cleared", onCleared);
   }, []);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("ela-tcya-admin-tab", adminTab);
+    } catch {
+      /* sessionStorage unavailable */
+    }
+  }, [adminTab]);
 
   const rosterNames = useMemo(() => roster.map((r) => r.name), [roster]);
 

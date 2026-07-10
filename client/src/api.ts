@@ -59,14 +59,25 @@ export async function adminLogin(
   return data.token;
 }
 
-export async function checkAdminSession(): Promise<boolean> {
-  const res = await fetch(`${API_BASE}/session`, {
-    headers: headers(),
-    cache: "no-store",
-  });
-  if (!res.ok) return false;
-  const data = (await res.json()) as { admin?: boolean };
-  return Boolean(data.admin);
+// Result of probing whether the stored token is still an admin session.
+//  - true      → confirmed admin
+//  - false     → confirmed NOT admin (explicit 401/403) → safe to log out
+//  - "unknown" → transient failure (5xx cold start, network blip) → do NOT log
+//    out; keep the session and try again later. Treating a transient blip as
+//    "logged out" is what makes a healthy app briefly look "wiped."
+export async function checkAdminSession(): Promise<boolean | "unknown"> {
+  try {
+    const res = await fetch(`${API_BASE}/session`, {
+      headers: headers(),
+      cache: "no-store",
+    });
+    if (res.status === 401 || res.status === 403) return false;
+    if (!res.ok) return "unknown";
+    const data = (await res.json()) as { admin?: boolean };
+    return Boolean(data.admin);
+  } catch {
+    return "unknown";
+  }
 }
 
 // ---------- Roster (public, names + grade only) ----------

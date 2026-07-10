@@ -20,6 +20,33 @@ import { runSuite } from "./suite.js";
 
 const URL = process.env.TEST_DATABASE_URL;
 
+// HARD GUARD: this suite TRUNCATEs all four tables before EVERY test. It must
+// NEVER run against the production database. Refuse unless the target is
+// unmistakably a throwaway: it must differ from DATABASE_URL, and either its
+// connection string carries a throwaway marker (test/throwaway/scratch/…) or the
+// operator explicitly sets CONFIRM_TRUNCATE=1. This throws at module load,
+// before resetDb() can fire.
+if (URL) {
+  const prod = (process.env.DATABASE_URL || "").trim();
+  if (prod && URL.trim() === prod) {
+    throw new Error(
+      "REFUSING to run the destructive parity suite: TEST_DATABASE_URL === DATABASE_URL — that is the PRODUCTION database. This suite TRUNCATEs every table. Point TEST_DATABASE_URL at a dedicated throwaway database."
+    );
+  }
+  const looksThrowaway = /test|throwaway|scratch|ephemeral|staging|local|dev/i.test(URL);
+  if (!looksThrowaway && process.env.CONFIRM_TRUNCATE !== "1") {
+    let host = "(unparseable)";
+    try {
+      host = new globalThis.URL(URL).host;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(
+      `REFUSING to run the destructive parity suite against ${host}: its connection string has no throwaway marker (expected /test|throwaway|scratch|ephemeral|staging|local|dev/). This suite TRUNCATEs ALL tables. Use a disposable database, or set CONFIRM_TRUNCATE=1 if you are certain this is not production.`
+    );
+  }
+}
+
 if (!URL) {
   test("Postgres store parity (skipped — set TEST_DATABASE_URL to run)", { skip: true }, () => {});
 } else {
@@ -66,6 +93,7 @@ if (!URL) {
       "/api",
       createRouter({
         store,
+        backend: "postgres",
         adminUsername: "admin",
         adminPassword: "1013",
         sessionSecret: deriveSessionSecret("admin", "1013"),

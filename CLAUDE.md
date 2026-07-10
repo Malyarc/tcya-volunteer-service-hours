@@ -75,24 +75,51 @@ npm run build --prefix client   # tsc -b && vite build
 - Client: `client/src/{utils,qr,volunteerExports}.test.ts`.
 
 **MANDATORY pre-deploy gate:** the default `npm test` is memory-only. Because the
-production data layer is Postgres, run the parity suite against a **throwaway**
-Neon DB before every deploy:
+production data layer is Postgres, run the parity suite against a **dedicated
+throwaway** Neon DB before every deploy:
 
 ```bash
-cd server && TEST_DATABASE_URL='postgres://throwaway…' npm test
+cd server && TEST_DATABASE_URL='postgres://…-test…/scratchdb' npm test
 ```
 
-There is no CI yet; treat this parity run as a required manual gate (a SQL typo in
-`store-postgres.js` passes the memory-only bar but breaks prod).
+The parity suite TRUNCATEs every table before each test, so it is **guarded**: it
+refuses to run when `TEST_DATABASE_URL` equals `DATABASE_URL`, or when the URL has
+no `test|throwaway|scratch|ephemeral|staging|local|dev` marker (override only with
+`CONFIRM_TRUNCATE=1` if you are certain). There is no CI yet; treat this parity run
+as a required manual gate (a SQL typo in `store-postgres.js` passes the memory-only
+bar but breaks prod).
+
+## Durability — NEVER wipe production
+
+**Production is the single source of truth and is never "reset to pristine."** Do
+NOT run the parity suite, `npm run reset`, `POST /api/admin/reset`, or a
+replace-all `POST /api/admin/import` against the prod database. (Real data was lost
+once this way.) Safeguards now in place:
+
+- **Fail-closed store** (`create-store.js`): in a prod-like env
+  (`NETLIFY`/`AWS_LAMBDA_FUNCTION_NAME`/`NODE_ENV=production`) with no DB URL it
+  THROWS instead of silently using the ephemeral in-memory store; `api.mjs` returns
+  503 rather than serving RAM. It resolves the URL from `DATABASE_URL ||
+  NETLIFY_DATABASE_URL || DATABASE_URL_UNPOOLED || NETLIFY_DATABASE_URL_UNPOOLED`.
+- **`GET /api/health`** returns `{ ok, backend, persistent, dbOk }` with a live DB
+  probe. `persistent:false` (in-memory) ⇒ a non-durable deploy — alert on it.
+- **`importAll` is non-destructive by category:** only wipes+replaces the tables
+  present in the payload (a volunteers-only import preserves events/hours).
+- **Reset is confirmation-gated:** `reset.js` needs `CONFIRM_RESET=1`;
+  `/api/admin/reset` needs `{"confirm":"RESET"}`.
 
 ## Deploy
 
-- **Netlify** (primary): push to `main` → auto-build. Requires `DATABASE_URL`,
-  `ADMIN_PASSWORD` (and ideally `SESSION_SECRET`) in Site config → Environment
-  variables. The function creates the schema + seeds the roster on first request.
+- **Netlify** (primary): push to `main` → auto-build. Requires `DATABASE_URL` (or
+  `NETLIFY_DATABASE_URL`), `ADMIN_PASSWORD` (and ideally `SESSION_SECRET`) in Site
+  config → Environment variables, scoped to **all** deploy contexts (Production +
+  Deploy Previews + Branch deploys) so preview URLs don't run in-memory. The
+  function creates the schema + seeds the roster on first request.
+- **Post-deploy smoke check:** `curl https://<site>/api/health` → expect
+  `{"backend":"postgres","persistent":true,"dbOk":true}`.
 - **EC2**: `npm run build` then `npm start` with the same env vars. `cd server &&
-  npm run migrate` pre-creates the schema; `npm run reset` clears events/attendance/
-  submissions but keeps the roster.
+  npm run migrate` pre-creates the schema; `CONFIRM_RESET=1 npm run reset` clears
+  events/attendance/submissions but keeps the roster (backup written first).
 - **Data migration** from an old file/Blobs backup: `POST /api/admin/import`
   (admin) with `{ events, submissions, volunteers? }`.
 
