@@ -154,7 +154,7 @@ describe("check-in/out timestamp helpers", () => {
 });
 
 describe("buildSummaries", () => {
-  const NAMES = ["Aaron Tse", "Betty Lin"] as const;
+  const NAMES = [{ name: "Aaron Tse" }, { name: "Betty Lin" }] as const;
 
   it("sums only countable hours and never double-counts duplicates", () => {
     const events = [evt({ id: "e1" }), evt({ id: "e2", date: "2026-04-01" })];
@@ -207,5 +207,16 @@ describe("buildSummaries", () => {
   it("lists every roster volunteer and sorts alphabetically", () => {
     const summaries = buildSummaries(NAMES, [], [evt()]);
     expect(summaries.map((s) => s.name)).toEqual(["Aaron Tse", "Betty Lin"]);
+  });
+
+  it("shows the volunteer's editable roster grade, overriding submission grade", () => {
+    const events = [evt({ id: "e1" })];
+    const submissions = [sub({ eventId: "e1", grade: "8th" })];
+    const summaries = buildSummaries(
+      [{ name: "Aaron Tse", grade: "11th" }],
+      submissions,
+      events
+    );
+    expect(summaries.find((s) => s.name === "Aaron Tse")!.latestGrade).toBe("11th");
   });
 });

@@ -28,13 +28,19 @@ Postgres** database.
 
 ## Critical invariants (do not break)
 
-1. **Hours count only when BOTH `staffCheckin` AND `volunteerCheckout` are true**
-   for a submission's attendance row (`client/src/utils.ts` `isCountableSubmission`).
-   Attendance timestamps do NOT create hours — hours come from the submitted
-   arrival/end times.
-2. **Deleting an event ORPHANS its submissions** (they must stop counting):
-   `submissions.event_id` has **no foreign key**. Do not add one (an FK with SET
-   NULL would make them count as "legacy" rows).
+1. **Hours are DERIVED from attendance check-in/out timestamps.** When an
+   attendance row is complete (both `checkinAt` and `checkoutAt` set, checkout
+   after check-in), the store's `reconcileSubmission` upserts a submission with
+   `hours = checkout − checkin` (rounded to 0.25) and HH:MM sign-in/out in the
+   chapter timezone (`server/src/hours.js`, `CHAPTER_TZ`). When incomplete, the
+   derived submission is deleted. Submissions are therefore a read-only
+   projection of attendance — there is NO public self-submit form. `GET
+   /submissions` still serves these rows (roster/certificate/export read them).
+   Call `reconcileSubmission` after every attendance mutation in BOTH stores.
+2. **Deleting an event (or removing a volunteer from one) deletes the derived
+   submissions** so no orphaned "pending" rows linger in the roster.
+   `submissions.event_id` has **no foreign key**; `deleteEvent` deletes the
+   submissions explicitly (and `removeAttendance` reconciles the one row).
 3. **The Postgres and in-memory stores must stay behaviorally identical.** The
    shared suite (`server/test/suite.js`) runs against both. Any change to one
    store must be mirrored in the other and covered by the suite.

@@ -59,10 +59,10 @@ export function EventsPanel({ events, onCreate, onOpenEvent }: Props) {
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Event
               </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:table-cell">
                 Attendees
               </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:table-cell">
                 Status
               </th>
               <th className="w-12" />
@@ -98,11 +98,18 @@ export function EventsPanel({ events, onCreate, onOpenEvent }: Props) {
                   </td>
                   <td className="px-4 py-3 text-sm font-medium text-slate-900">
                     {getEventDisplayName(ev)}
+                    {/* Mobile: fold attendees + status into the event cell. */}
+                    <div className="mt-0.5 flex items-center gap-2 text-xs font-normal text-slate-500 sm:hidden">
+                      <span>{confirmed}/{total} confirmed</span>
+                      <span className={`badge ${isUpcoming ? "bg-brand-100 text-brand-800" : "bg-slate-100 text-slate-600"}`}>
+                        {isUpcoming ? "Upcoming" : "Past"}
+                      </span>
+                    </div>
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3 text-sm text-slate-700">
+                  <td className="hidden whitespace-nowrap px-4 py-3 text-sm text-slate-700 sm:table-cell">
                     {confirmed} / {total}
                   </td>
-                  <td className="whitespace-nowrap px-4 py-3">
+                  <td className="hidden whitespace-nowrap px-4 py-3 sm:table-cell">
                     <span
                       className={`badge ${
                         isUpcoming

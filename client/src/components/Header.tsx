@@ -5,7 +5,6 @@ interface HeaderProps {
   isAdmin: boolean;
   onAdminLogin: () => void;
   onAdminLogout: () => void;
-  onNewSubmission: () => void;
 }
 
 export function Header({
@@ -15,7 +14,6 @@ export function Header({
   isAdmin,
   onAdminLogin,
   onAdminLogout,
-  onNewSubmission,
 }: HeaderProps) {
   return (
     <header className="relative overflow-hidden">
@@ -110,23 +108,6 @@ export function Header({
               </p>
             </div>
           </div>
-          <button
-            onClick={onNewSubmission}
-            className="inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2.5 text-sm font-semibold text-brand-700 shadow-lg shadow-brand-950/20 transition hover:bg-brand-50 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-brand-700"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              className="h-4 w-4"
-            >
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            Log Volunteer Hours
-          </button>
         </div>
 
         <div className="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">

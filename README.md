@@ -19,15 +19,14 @@ out of events** with a phone camera, and track cumulative service hours.
 
 **Public (no login required)**
 
-- Hero dashboard with total confirmed hours, submissions, and active volunteers.
+- Hero dashboard with total confirmed hours and active volunteers.
 - Alphabetical volunteer roster — click a name to see every confirmed log.
-- "Log Volunteer Hours" form (searchable volunteer dropdown, event picker,
-  arrival / end times, comments). Hours are computed automatically.
-- One-click **Download Excel Report** (summary + confirmed submissions +
-  per-volunteer breakdown) and per-volunteer / per-event **certificate PDFs**.
+- One-click **Download Excel Report** and per-volunteer / per-event
+  **certificate PDFs**.
 - Auto-refreshes when the tab regains focus.
 
-**Admin (login required)**
+**Admin (login required)** — a sticky tab bar switches between **Roster ·
+Volunteers · Events** so nothing needs scrolling.
 
 - **Volunteers panel** — the heart of the QR feature:
   - Add / edit / delete volunteers. Each gets a unique code (`TCYA-0001`, …).
@@ -45,13 +44,14 @@ out of events** with a phone camera, and track cumulative service hours.
     check-out time). Continuous scanning with a duplicate-scan guard, an audible
     beep, live feedback, and a manual code / volunteer fallback if the camera
     isn't available.
-  - Attendance table shows each volunteer's code, check-in status + time, and
-    check-out status + time. Toggle a status or **edit the times manually**.
-  - Pre-register volunteers, or let them self-add by submitting the hours form.
-- **Hours count only when BOTH staff check-in and volunteer check-out are green.**
-- Admin data tools: `POST /api/admin/reset` (clears events + submissions, keeps
-  the roster), `GET /api/admin/export` (full backup JSON), and
-  `POST /api/admin/import` (restore / migrate — see below).
+  - Attendance table shows each volunteer's code, check-in time, and check-out
+    time. **Edit the times manually** any time.
+  - Pre-register volunteers from the picker, or just scan them in on the day.
+- **Service hours are derived from the check-in / check-out times**
+  (hours = checkout − checkin). There is no separate "log hours" form.
+- Admin data tools: `POST /api/admin/reset` (clears events + hours, keeps the
+  roster), `GET /api/admin/export` (full backup JSON), and `POST /api/admin/import`
+  (restore / migrate — see below).
 
 ## How the QR check-in flow works
 
@@ -61,9 +61,9 @@ out of events** with a phone camera, and track cumulative service hours.
 3. **Admin creates an event.**
 4. **At the event, staff open the event → Scan QR** and scan each volunteer's
    phone: "Check In" stamps a check-in time, "Check Out" stamps a check-out
-   time. Volunteers can also submit the hours form (flips their check-out).
-5. **A row counts toward hours once both check-in and check-out are green.**
-   Staff can fix anything by hand on the Event Detail page.
+   time (or set them by hand on the attendance table).
+5. **Once a volunteer has both a check-in and a check-out time, their hours for
+   that event = checkout − checkin** and appear on the roster automatically.
 
 ## The database (Neon Postgres)
 
@@ -74,7 +74,7 @@ All app data lives in Postgres. The schema (see `server/src/db/schema.js`):
 | `volunteers` | id, **code** (`TCYA-####`, from a sequence), name, email, phone, grade, `custom_fields` (JSONB), timestamps |
 | `events` | id, name, custom_name, date (`YYYY-MM-DD` text), created_at |
 | `attendance` | event_id (FK, cascades on event delete), volunteer_id (FK, set null on volunteer delete), volunteer_name, staff_checkin + `checkin_at`, volunteer_checkout + `checkout_at`, self_added |
-| `submissions` | id, event_id (**no FK** — deleting an event orphans the row so it stops counting), volunteer_name, grade, event/date snapshot, times, hours, comments, submitted_at |
+| `submissions` | a read-only projection of complete attendance (one per volunteer per event with both times): id, event_id (**no FK**; deleted explicitly on event delete), volunteer_name, grade, event/date snapshot, sign-in/out HH:MM, hours, submitted_at |
 
 Design choices that keep behavior correct:
 

@@ -37,6 +37,25 @@ export function runSuite(withServer, label) {
     return v.code;
   }
 
+  // Log service hours the new way: put the volunteer on the event, then set
+  // check-in/out times (via the manual-time PATCH) with a real gap so the store
+  // derives a countable submission. Returns the updated event.
+  async function logHours(api, auth, eventId, volunteerName, checkinAt, checkoutAt) {
+    await api.send(
+      "POST",
+      `/api/events/${eventId}/attendance`,
+      { volunteerNames: [volunteerName] },
+      auth
+    );
+    const r = await api.send(
+      "PATCH",
+      `/api/events/${eventId}/attendance`,
+      { volunteerName, checkinAt, checkoutAt },
+      auth
+    );
+    return r.body;
+  }
+
   // ---------------- Auth ----------------
 
   test(name("login rejects wrong credentials, accepts correct"), async () => {
@@ -157,19 +176,10 @@ export function runSuite(withServer, label) {
       const vols = (await api.get("/api/volunteers", auth)).body;
       const aaron = vols.find((v) => v.name === "Aaron Tse");
 
-      await api.send(
-        "POST",
-        `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse"] },
-        auth
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
-      await api.send("POST", "/api/submissions", {
-        eventId: event.id,
-        volunteerName: "Aaron Tse",
-        grade: "10th",
-        arrivalTime: "08:00",
-        endTime: "10:00",
-      });
 
       const renamed = await api.send(
         "PATCH",
@@ -230,22 +240,25 @@ export function runSuite(withServer, label) {
     });
   });
 
-  test(name("deleting an event orphans its submissions (they stop counting) but keeps the rows"), async () => {
+  test(name("deleting an event deletes its submissions (no orphaned 'pending' rows)"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      await api.send("POST", "/api/submissions", {
-        eventId: event.id,
-        volunteerName: "Aaron Tse",
-        grade: "10th",
-        arrivalTime: "08:00",
-        endTime: "10:00",
-      });
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
+      );
+      assert.equal(
+        (await api.get("/api/submissions")).body.filter((s) => s.volunteerName === "Aaron Tse").length,
+        1,
+        "hours logged from check-in/out"
+      );
       await api.send("DELETE", `/api/events/${event.id}`, undefined, auth);
-      const subs = (await api.get("/api/submissions")).body;
-      const s = subs.find((x) => x.volunteerName === "Aaron Tse");
-      assert.ok(s, "submission row remains");
-      assert.equal(s.eventId, event.id, "eventId kept (now orphaned), so it won't count");
+      assert.equal(
+        (await api.get("/api/submissions")).body.filter((s) => s.volunteerName === "Aaron Tse").length,
+        0,
+        "deleting the event removed its submissions — nothing left to show as pending"
+      );
       assert.equal((await api.get("/api/events")).body.length, 0);
     });
   });
@@ -390,92 +403,62 @@ export function runSuite(withServer, label) {
 
   // ---------------- Submission validation + upsert ----------------
 
-  test(name("submission rejects out-of-range and off-boundary times"), async () => {
+  // ---------------- Hours derived from check-in / check-out ----------------
+
+  test(name("setting check-in + check-out times creates a countable submission with computed hours"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const sub = (arrivalTime, endTime) =>
-        api.send("POST", "/api/submissions", {
-          eventId: event.id,
-          volunteerName: "Aaron Tse",
-          grade: "10th",
-          arrivalTime,
-          endTime,
-        });
-      assert.equal((await sub("00:00", "99:45")).status, 400, "hour 99");
-      assert.equal((await sub("09:00", "25:15")).status, 400, "hour 25");
-      assert.equal((await sub("09:00", "09:59")).status, 400, "off 15-min boundary");
-      assert.equal((await sub("12:00", "12:00")).status, 400, "zero-length");
-      assert.equal((await sub("12:00", "09:00")).status, 400, "end before start");
-      const ok = await sub("09:00", "12:15");
-      assert.equal(ok.status, 201);
-      assert.equal(ok.body.submission.hours, 3.25);
+      // 16:00Z–19:00Z = 3.0 hours.
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
+      );
+      const subs = (await api.get("/api/submissions")).body.filter(
+        (s) => s.volunteerName === "Aaron Tse"
+      );
+      assert.equal(subs.length, 1, "one derived submission");
+      assert.equal(subs[0].hours, 3, "hours = checkout − checkin");
+      assert.equal(subs[0].eventId, event.id);
     });
   });
 
-  test(name("re-submitting the same event upserts instead of duplicating (stable id)"), async () => {
+  test(name("clearing the check-out time removes the derived hours"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const sub = (endTime, comments) =>
-        api.send("POST", "/api/submissions", {
-          eventId: event.id,
-          volunteerName: "Aaron Tse",
-          grade: "10th",
-          arrivalTime: "08:00",
-          endTime,
-          comments,
-        });
-      const first = await sub("11:30", "first");
-      const second = await sub("12:00", "corrected");
-      assert.equal(first.status, 201);
-      assert.equal(second.status, 201);
-
-      const beach = (await api.get("/api/submissions")).body.filter(
-        (s) => s.eventId === event.id && s.volunteerName === "Aaron Tse"
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
-      assert.equal(beach.length, 1, "single row, not a duplicate");
-      assert.equal(beach[0].hours, 4, "keeps the corrected value");
-      assert.equal(beach[0].comments, "corrected");
-      assert.equal(beach[0].id, first.body.submission.id, "id stays stable");
+      assert.equal((await api.get("/api/submissions")).body.length, 1);
+      // Clear checkout — no longer complete, so the derived submission goes away.
+      await api.send("PATCH", `/api/events/${event.id}/attendance`, {
+        volunteerName: "Aaron Tse", checkoutAt: null,
+      }, auth);
+      assert.equal(
+        (await api.get("/api/submissions")).body.length,
+        0,
+        "incomplete attendance leaves no hours"
+      );
     });
   });
 
-  test(name("volunteer submission flips checkout; unknown walk-in becomes self-added"), async () => {
+  test(name("removing a volunteer from an event deletes their derived hours (fixes stuck pending)"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      await api.send(
-        "POST",
-        `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse"] },
-        auth
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
-      await api.send("POST", "/api/submissions", {
-        eventId: event.id,
-        volunteerName: "Aaron Tse",
-        grade: "10th",
-        arrivalTime: "08:00",
-        endTime: "11:30",
-      });
-      let ev = (await api.get("/api/events", auth)).body[0]; // admin view keeps timestamps
-      const row = ev.attendance.find((a) => a.volunteerName === "Aaron Tse");
-      assert.equal(row.staffCheckin, true);
-      assert.equal(row.volunteerCheckout, true);
-      assert.ok(row.checkoutAt, "form submit stamps a checkout time");
-
-      await api.send("POST", "/api/submissions", {
-        eventId: event.id,
-        volunteerName: "Walk In Stranger",
-        grade: "9th",
-        arrivalTime: "09:00",
-        endTime: "10:00",
-      });
-      ev = (await api.get("/api/events")).body[0];
-      const walk = ev.attendance.find((a) => a.volunteerName === "Walk In Stranger");
-      assert.equal(walk.selfAdded, true);
-      assert.equal(walk.staffCheckin, false);
-      assert.equal(walk.volunteerCheckout, true);
+      assert.equal((await api.get("/api/submissions")).body.length, 1);
+      await api.send("DELETE", `/api/events/${event.id}/attendance`, { volunteerName: "Aaron Tse" }, auth);
+      assert.equal(
+        (await api.get("/api/submissions")).body.length,
+        0,
+        "removing the attendee removed their hours — no orphaned pending row"
+      );
     });
   });
 
@@ -502,16 +485,10 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      await api.send(
-        "POST",
-        `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse"] },
-        auth
+      await logHours(
+        api, auth, event.id, "Aaron Tse",
+        "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
-      await api.send("POST", "/api/submissions", {
-        eventId: event.id, volunteerName: "Aaron Tse", grade: "10th",
-        arrivalTime: "08:00", endTime: "11:00",
-      });
 
       const exported = await api.get("/api/admin/export", auth);
       assert.equal(exported.status, 200);
@@ -624,40 +601,6 @@ export function runSuite(withServer, label) {
     });
   });
 
-  test(name("rename that collides only on submissions returns 409 (parity)"), async () => {
-    await withServer(async (api) => {
-      const auth = await adminToken(api);
-      const event = await makeEvent(api, auth);
-      // Walk-in "Zzz Walkin" submits, then admin removes their attendance row,
-      // leaving an orphan submission keyed (event, "Zzz Walkin").
-      await api.send("POST", "/api/submissions", {
-        eventId: event.id, volunteerName: "Zzz Walkin", grade: "9th",
-        arrivalTime: "09:00", endTime: "10:00",
-      });
-      await api.send("DELETE", `/api/events/${event.id}/attendance`, { volunteerName: "Zzz Walkin" }, auth);
-      // Aaron submits for the same event.
-      await api.send("POST", "/api/submissions", {
-        eventId: event.id, volunteerName: "Aaron Tse", grade: "10th",
-        arrivalTime: "09:00", endTime: "11:00",
-      });
-      const aaron = (await api.get("/api/volunteers", auth)).body.find(
-        (v) => v.name === "Aaron Tse"
-      );
-      // Renaming Aaron -> "Zzz Walkin" would create two submissions keyed the same.
-      const r = await api.send(
-        "PATCH",
-        `/api/volunteers/${aaron.id}`,
-        { name: "Zzz Walkin" },
-        auth
-      );
-      assert.equal(r.status, 409);
-      const subs = (await api.get("/api/submissions")).body.filter(
-        (s) => s.eventId === event.id && s.volunteerName === "Zzz Walkin"
-      );
-      assert.equal(subs.length, 1, "no duplicate (event, name) submission created");
-    });
-  });
-
   // ---------------- Manual time editor marks the side checked ----------------
 
   test(name("PATCH checkoutAt only (no boolean) marks volunteerCheckout true"), async () => {
@@ -718,13 +661,12 @@ export function runSuite(withServer, label) {
 
   // ---------------- Malformed ids degrade gracefully ----------------
 
-  test(name("malformed eventId on public /submissions returns 400, not 500"), async () => {
+  test(name("malformed eventId on check-in returns 404, not 500"), async () => {
     await withServer(async (api) => {
-      const r = await api.send("POST", "/api/submissions", {
-        eventId: "not-a-uuid", volunteerName: "Aaron Tse", grade: "10th",
-        arrivalTime: "09:00", endTime: "10:00",
-      });
-      assert.equal(r.status, 400);
+      const auth = await adminToken(api);
+      const code = await codeFor(api, auth, "Aaron Tse");
+      const r = await api.send("POST", "/api/events/not-a-uuid/checkin", { code }, auth);
+      assert.equal(r.status, 404);
     });
   });
 

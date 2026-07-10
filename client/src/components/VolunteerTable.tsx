@@ -49,7 +49,7 @@ export function VolunteerTable({ summaries }: Props) {
             Click a volunteer to see every event they've signed in for.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto">
           <label className="flex items-center gap-2 text-sm text-slate-600">
             <input
               type="checkbox"
@@ -59,7 +59,7 @@ export function VolunteerTable({ summaries }: Props) {
             />
             Only show with hours
           </label>
-          <div className="relative">
+          <div className="relative flex-1 sm:flex-none">
             <svg
               viewBox="0 0 24 24"
               fill="none"
@@ -77,7 +77,7 @@ export function VolunteerTable({ summaries }: Props) {
               placeholder="Search name or grade…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              className="input pl-9 sm:w-72"
+              className="input w-full pl-9 sm:w-72"
             />
           </div>
         </div>
@@ -87,19 +87,19 @@ export function VolunteerTable({ summaries }: Props) {
         <table className="min-w-full divide-y divide-slate-100">
           <thead className="bg-slate-50/70">
             <tr>
-              <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-5">
                 Volunteer
               </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:table-cell">
                 Grade
               </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 md:table-cell">
                 Events
               </th>
               <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Total Hours
               </th>
-              <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <th className="hidden px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500 sm:table-cell">
                 Certificate
               </th>
               <th className="w-12" />
@@ -155,21 +155,28 @@ function FragmentRow({
           isOpen ? "bg-brand-50/30" : ""
         }`}
       >
-        <td className="whitespace-nowrap px-5 py-3">
+        <td className="whitespace-nowrap px-4 py-3 sm:px-5">
           <div className="flex items-center gap-3">
             <Avatar name={v.name} />
-            <div className="font-medium text-slate-900">{v.name}</div>
+            <div className="min-w-0">
+              <div className="font-medium text-slate-900">{v.name}</div>
+              {/* On mobile, surface grade here since its column is hidden. */}
+              <div className="text-xs text-slate-500 sm:hidden">
+                {v.latestGrade !== "—" ? `Grade ${v.latestGrade}` : ""}
+                {v.pendingCount > 0 ? ` · ${v.pendingCount} pending` : ""}
+              </div>
+            </div>
           </div>
         </td>
-        <td className="whitespace-nowrap px-4 py-3 text-sm text-slate-600">
+        <td className="hidden whitespace-nowrap px-4 py-3 text-sm text-slate-600 sm:table-cell">
           {v.latestGrade}
         </td>
-        <td className="whitespace-nowrap px-4 py-3 text-sm text-slate-600">
+        <td className="hidden whitespace-nowrap px-4 py-3 text-sm text-slate-600 md:table-cell">
           {v.submissions.length}
           {v.pendingCount > 0 && (
             <span
               className="ml-2 badge bg-amber-100 text-amber-800"
-              title="Submissions awaiting both staff check-in and volunteer check-out"
+              title="Checked in but not yet checked out"
             >
               {v.pendingCount} pending
             </span>
@@ -187,7 +194,7 @@ function FragmentRow({
           </span>
         </td>
         <td
-          className="whitespace-nowrap px-4 py-3 text-right"
+          className="hidden whitespace-nowrap px-4 py-3 text-right sm:table-cell"
           onClick={(e) => e.stopPropagation()}
         >
           <CertificateButton

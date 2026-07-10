@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Header } from "./components/Header";
 import { VolunteerTable } from "./components/VolunteerTable";
-import { SubmissionForm } from "./components/SubmissionForm";
 import { ExportButton } from "./components/ExportButton";
 import { Toast } from "./components/Toast";
 import { AdminLoginModal } from "./components/AdminLoginModal";
@@ -10,6 +9,7 @@ import { EventsPanel } from "./components/admin/EventsPanel";
 import { CreateEventModal } from "./components/admin/CreateEventModal";
 import { EventDetailPage } from "./components/admin/EventDetailPage";
 import { VolunteersPanel } from "./components/admin/VolunteersPanel";
+import { AdminTabs, type AdminTab } from "./components/admin/AdminTabs";
 import {
   checkAdminSession,
   fetchEvents,
@@ -31,8 +31,6 @@ type View = { kind: "home" } | { kind: "event"; eventId: string };
 const UNLOCK_KEY = "ela-tcya-app-unlocked";
 
 export default function App() {
-  // Soft front-door passcode gate. Stored in sessionStorage so it resets when
-  // the tab closes but persists across reloads in the same session.
   const [unlocked, setUnlocked] = useState<boolean>(() => {
     try {
       return sessionStorage.getItem(UNLOCK_KEY) === "true";
@@ -50,9 +48,9 @@ export default function App() {
 
   const [isAdmin, setIsAdmin] = useState<boolean>(() => isAdminLoggedIn());
   const [view, setView] = useState<View>({ kind: "home" });
+  const [adminTab, setAdminTab] = useState<AdminTab>("roster");
 
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
-  const [submissionFormOpen, setSubmissionFormOpen] = useState(false);
   const [createEventOpen, setCreateEventOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -78,7 +76,7 @@ export default function App() {
     try {
       setVolunteers(await fetchVolunteers());
     } catch {
-      // non-fatal — the admin panel simply shows what it has
+      // non-fatal
     }
   }, []);
 
@@ -86,8 +84,6 @@ export default function App() {
     refresh();
   }, [refresh]);
 
-  // Validate the stored admin token on first load — clears stale tokens after
-  // server restarts or password changes.
   useEffect(() => {
     if (!isAdmin) {
       setVolunteers([]);
@@ -102,9 +98,8 @@ export default function App() {
         setIsAdmin(false);
       } else {
         refreshVolunteers();
-        // Re-fetch events WITH the admin token: a pre-login fetch returned the
-        // publicEvent-stripped copy (no check-in/out times), and editing that
-        // stale copy could otherwise wipe real timestamps.
+        // Re-fetch events WITH the admin token so the admin sees the full
+        // attendance (check-in/out times) rather than the public-stripped copy.
         refresh();
       }
     })();
@@ -113,7 +108,6 @@ export default function App() {
     };
   }, [isAdmin, refreshVolunteers, refresh]);
 
-  // Re-fetch when the tab becomes visible so users always see fresh data.
   useEffect(() => {
     function onVisible() {
       if (document.visibilityState === "visible") {
@@ -128,8 +122,8 @@ export default function App() {
   const rosterNames = useMemo(() => roster.map((r) => r.name), [roster]);
 
   const summaries = useMemo(
-    () => buildSummaries(rosterNames, submissions, events),
-    [rosterNames, submissions, events]
+    () => buildSummaries(roster, submissions, events),
+    [roster, submissions, events]
   );
 
   const totals = useMemo(() => {
@@ -150,7 +144,6 @@ export default function App() {
     return events.find((e) => e.id === view.eventId) || null;
   }, [view, events]);
 
-  // If the event we're viewing got deleted, fall back to home.
   useEffect(() => {
     if (view.kind === "event" && !loading && !currentEvent) {
       setView({ kind: "home" });
@@ -161,6 +154,7 @@ export default function App() {
     clearAdminToken();
     setIsAdmin(false);
     setView({ kind: "home" });
+    setAdminTab("roster");
     setToast("Signed out.");
   }
 
@@ -176,6 +170,8 @@ export default function App() {
   async function handleVolunteersChanged() {
     await Promise.all([refresh(), refreshVolunteers()]);
   }
+
+  const showRoster = !isAdmin || adminTab === "roster";
 
   return (
     <div className="relative min-h-full pb-12">
@@ -194,8 +190,16 @@ export default function App() {
           isAdmin={isAdmin}
           onAdminLogin={() => setAdminLoginOpen(true)}
           onAdminLogout={handleAdminLogout}
-          onNewSubmission={() => setSubmissionFormOpen(true)}
         />
+
+        {isAdmin && view.kind === "home" && (
+          <AdminTabs
+            active={adminTab}
+            onChange={setAdminTab}
+            volunteerCount={volunteers.length}
+            eventCount={events.length}
+          />
+        )}
 
         <main className="mx-auto mt-6 max-w-6xl space-y-6 px-4 sm:px-6">
           {error && (
@@ -236,31 +240,34 @@ export default function App() {
                 )
               }
               onEventDeleted={() => {
-                setEvents((prev) =>
-                  prev.filter((e) => e.id !== currentEvent.id)
-                );
+                setEvents((prev) => prev.filter((e) => e.id !== currentEvent.id));
                 setView({ kind: "home" });
                 setToast("Event deleted.");
+                refresh();
               }}
             />
           ) : (
             <>
-              <VolunteerTable summaries={summaries} />
-              {isAdmin && (
+              {showRoster && (
+                <>
+                  <VolunteerTable summaries={summaries} />
+                  {isAdmin && <ExportButton summaries={summaries} />}
+                </>
+              )}
+              {isAdmin && adminTab === "volunteers" && (
                 <VolunteersPanel
                   volunteers={volunteers}
                   onChanged={handleVolunteersChanged}
                   onToast={setToast}
                 />
               )}
-              {isAdmin && (
+              {isAdmin && adminTab === "events" && (
                 <EventsPanel
                   events={events}
                   onCreate={() => setCreateEventOpen(true)}
                   onOpenEvent={(id) => setView({ kind: "event", eventId: id })}
                 />
               )}
-              {isAdmin && <ExportButton summaries={summaries} />}
             </>
           )}
 
@@ -268,18 +275,6 @@ export default function App() {
             ELA TCYA Volunteer Service Hours · Built with great love 大愛
           </footer>
         </main>
-
-        <SubmissionForm
-          open={submissionFormOpen}
-          events={events}
-          rosterNames={rosterNames}
-          onClose={() => setSubmissionFormOpen(false)}
-          onSubmitted={async () => {
-            setSubmissionFormOpen(false);
-            setToast("Hours submitted! Thank you for volunteering.");
-            await refresh();
-          }}
-        />
 
         <AdminLoginModal
           open={adminLoginOpen}

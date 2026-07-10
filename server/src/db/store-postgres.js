@@ -11,6 +11,7 @@ import crypto from "crypto";
 import { neon } from "@neondatabase/serverless";
 import { SCHEMA_STATEMENTS, SEED_LOCK_KEY } from "./schema.js";
 import { SEED_VOLUNTEERS } from "../data/seed-volunteers.js";
+import { hoursBetween, localHHMM } from "../hours.js";
 
 // ---------- row → API-shape mappers ----------
 
@@ -140,6 +141,37 @@ export function createPostgresStore(connectionString) {
       LEFT JOIN volunteers v ON v.id = a.volunteer_id
       WHERE a.event_id = ${id}
       ORDER BY a.seq ASC`;
+  }
+
+  // Keep the volunteer's submission for this event in sync with their check-in /
+  // out times: a submission (= counted service hours) exists exactly when the
+  // attendance row is complete (both times set, checkout after check-in). This
+  // is how "hours" flow from the QR scan / manual times, with no stale rows.
+  async function reconcileSubmission(eventId, volunteerName) {
+    const rows = await sql`
+      SELECT a.checkin_at, a.checkout_at, e.name AS ev_name, e.custom_name, e.date AS ev_date,
+             (SELECT grade FROM volunteers WHERE name = a.volunteer_name ORDER BY created_at LIMIT 1) AS v_grade
+      FROM attendance a
+      JOIN events e ON e.id = a.event_id
+      WHERE a.event_id = ${eventId} AND a.volunteer_name = ${volunteerName}`;
+    const r = rows[0];
+    const hrs = r ? hoursBetween(toIso(r.checkin_at), toIso(r.checkout_at)) : 0;
+    if (!r || hrs <= 0) {
+      await sql`DELETE FROM submissions WHERE event_id = ${eventId} AND volunteer_name = ${volunteerName}`;
+      return;
+    }
+    const eventName = r.custom_name ? r.custom_name : r.ev_name;
+    await sql`
+      INSERT INTO submissions
+        (event_id, volunteer_name, grade, event_name, custom_event_name, event_date, arrival_time, end_time, hours, comments)
+      VALUES
+        (${eventId}, ${volunteerName}, ${r.v_grade || ""}, ${eventName}, ${r.custom_name || null}, ${r.ev_date},
+         ${localHHMM(toIso(r.checkin_at))}, ${localHHMM(toIso(r.checkout_at))}, ${hrs}, '')
+      ON CONFLICT (event_id, volunteer_name) DO UPDATE
+        SET grade = EXCLUDED.grade, event_name = EXCLUDED.event_name,
+            custom_event_name = EXCLUDED.custom_event_name, event_date = EXCLUDED.event_date,
+            arrival_time = EXCLUDED.arrival_time, end_time = EXCLUDED.end_time,
+            hours = EXCLUDED.hours, submitted_at = now()`;
   }
 
   // ---------- volunteers ----------
@@ -290,8 +322,13 @@ export function createPostgresStore(connectionString) {
   async function deleteEvent(id) {
     await ensureReady();
     if (!isUuid(id)) return false;
-    const rows = await sql`DELETE FROM events WHERE id = ${id} RETURNING id`;
-    return rows.length > 0;
+    // Delete the event's submissions too (attendance cascades via FK). Without
+    // this, a deleted event leaves orphaned "pending" rows in the roster.
+    const results = await sql.transaction([
+      sql`DELETE FROM submissions WHERE event_id = ${id}`,
+      sql`DELETE FROM events WHERE id = ${id} RETURNING id`,
+    ]);
+    return results[1].length > 0;
   }
 
   // ---------- attendance ----------
@@ -335,6 +372,7 @@ export function createPostgresStore(connectionString) {
             checkin_at = COALESCE(attendance.checkin_at, now()),
             self_added = false
       RETURNING *`;
+    await reconcileSubmission(eventId, vol.name);
     return {
       ok: true,
       volunteer: vol,
@@ -362,6 +400,7 @@ export function createPostgresStore(connectionString) {
             volunteer_id = EXCLUDED.volunteer_id,
             checkout_at = now()
       RETURNING *`;
+    await reconcileSubmission(eventId, vol.name);
     return {
       ok: true,
       volunteer: vol,
@@ -408,6 +447,7 @@ export function createPostgresStore(connectionString) {
       WHERE event_id = ${eventId} AND volunteer_name = ${volunteerName}
       RETURNING id`;
     if (rows.length === 0) return null;
+    await reconcileSubmission(eventId, volunteerName);
     return getEvent(eventId);
   }
 
@@ -415,6 +455,8 @@ export function createPostgresStore(connectionString) {
     await ensureReady();
     if (!(await eventRowById(eventId))) return null;
     await sql`DELETE FROM attendance WHERE event_id = ${eventId} AND volunteer_name = ${volunteerName}`;
+    // Removing a volunteer from an event removes their derived hours too.
+    await reconcileSubmission(eventId, volunteerName);
     return getEvent(eventId);
   }
 
@@ -424,51 +466,6 @@ export function createPostgresStore(connectionString) {
     await ensureReady();
     const rows = await sql`SELECT * FROM submissions ORDER BY submitted_at ASC`;
     return rows.map(mapSubmission);
-  }
-
-  async function upsertSubmission({
-    eventId,
-    volunteerName,
-    grade,
-    arrivalTime,
-    endTime,
-    hours,
-    comments,
-  }) {
-    await ensureReady();
-    const ev = await eventRowById(eventId);
-    if (!ev) return null;
-    const eventName = ev.custom_name ? ev.custom_name : ev.name;
-    const customEventName = ev.custom_name || null;
-    const eventDate = ev.date;
-
-    // submission upsert BEFORE attendance upsert — see updateVolunteer for why
-    // the lock order must be consistent across writers.
-    const results = await sql.transaction([
-      sql`
-        INSERT INTO submissions
-          (event_id, volunteer_name, grade, event_name, custom_event_name, event_date, arrival_time, end_time, hours, comments)
-        VALUES
-          (${eventId}, ${volunteerName}, ${grade}, ${eventName}, ${customEventName}, ${eventDate}, ${arrivalTime}, ${endTime}, ${hours}, ${comments})
-        ON CONFLICT (event_id, volunteer_name) DO UPDATE
-          SET grade = EXCLUDED.grade, event_name = EXCLUDED.event_name,
-              custom_event_name = EXCLUDED.custom_event_name, event_date = EXCLUDED.event_date,
-              arrival_time = EXCLUDED.arrival_time, end_time = EXCLUDED.end_time,
-              hours = EXCLUDED.hours, comments = EXCLUDED.comments, submitted_at = now()
-        RETURNING *`,
-      sql`
-        INSERT INTO attendance
-          (event_id, volunteer_id, volunteer_name, staff_checkin, volunteer_checkout, checkout_at, self_added)
-        VALUES
-          (${eventId},
-           (SELECT id FROM volunteers WHERE name = ${volunteerName} ORDER BY created_at LIMIT 1),
-           ${volunteerName}, false, true, now(), true)
-        ON CONFLICT (event_id, volunteer_name) DO UPDATE
-          SET volunteer_checkout = true,
-              checkout_at = COALESCE(attendance.checkout_at, now()),
-              volunteer_id = COALESCE(attendance.volunteer_id, EXCLUDED.volunteer_id)`,
-    ]);
-    return { submission: mapSubmission(results[0][0]), event: await getEvent(eventId) };
   }
 
   // ---------- admin ----------
@@ -608,7 +605,6 @@ export function createPostgresStore(connectionString) {
     patchAttendance,
     removeAttendance,
     listSubmissions,
-    upsertSubmission,
     reset,
     exportAll,
     importAll,

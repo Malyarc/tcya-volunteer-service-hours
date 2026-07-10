@@ -13,15 +13,6 @@ export interface Submission {
   submittedAt: string; // ISO timestamp
 }
 
-export interface NewSubmission {
-  volunteerName: string;
-  grade: string;
-  eventId: string;
-  arrivalTime: string;
-  endTime: string;
-  comments?: string;
-}
-
 export interface AttendanceEntry {
   volunteerName: string;
   volunteerId?: string | null;

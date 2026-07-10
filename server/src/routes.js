@@ -12,21 +12,6 @@ function constantTimeEqual(a, b) {
   return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
-function computeHours(arrivalTime, endTime) {
-  const [aH, aM] = arrivalTime.split(":").map(Number);
-  const [eH, eM] = endTime.split(":").map(Number);
-  const minutes = eH * 60 + eM - (aH * 60 + aM);
-  if (Number.isNaN(minutes) || minutes <= 0) return 0;
-  return Math.round((minutes / 60) * 100) / 100;
-}
-
-function isValidTime(t) {
-  if (typeof t !== "string" || !/^\d{2}:\d{2}$/.test(t)) return false;
-  const hours = parseInt(t.slice(0, 2), 10);
-  const minutes = parseInt(t.slice(3, 5), 10);
-  if (hours > 23 || minutes > 59) return false;
-  return minutes % 15 === 0;
-}
 function isValidDate(d) {
   return typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
 }
@@ -299,52 +284,10 @@ export function createRouter({
     }
   });
 
-  router.post("/submissions", async (req, res) => {
-    const body = req.body || {};
-    const { eventId, arrivalTime, endTime } = body;
-
-    const errors = [];
-    // Cap the stored free-text on this PUBLIC endpoint so anonymous callers
-    // can't bloat the store with megabyte strings.
-    const volunteerName = trimStr(body.volunteerName, 120);
-    const grade = trimStr(body.grade, 40);
-    const comments = trimStr(body.comments, 2000);
-
-    if (!volunteerName) errors.push("volunteerName is required");
-    if (!grade) errors.push("grade is required");
-    if (!eventId || typeof eventId !== "string")
-      errors.push("eventId is required");
-    if (!isValidTime(arrivalTime))
-      errors.push("arrivalTime must be HH:MM on a 15-minute boundary");
-    if (!isValidTime(endTime))
-      errors.push("endTime must be HH:MM on a 15-minute boundary");
-
-    const hours = computeHours(arrivalTime || "", endTime || "");
-    if (hours <= 0) errors.push("endTime must be after arrivalTime");
-
-    if (errors.length > 0) return res.status(400).json({ errors });
-
-    try {
-      const result = await store.upsertSubmission({
-        eventId,
-        volunteerName,
-        grade,
-        arrivalTime,
-        endTime,
-        hours,
-        comments,
-      });
-      if (!result) {
-        return res
-          .status(400)
-          .json({ errors: ["Selected event no longer exists"] });
-      }
-      res.status(201).json({ submission: result.submission });
-    } catch (err) {
-      console.error("Failed to save submission", err);
-      res.status(500).json({ error: "Failed to save submission" });
-    }
-  });
+  // Note: there is no public POST /submissions anymore. Service hours are
+  // derived from a volunteer's check-in / check-out times (QR scan or the
+  // admin's manual time edit on the event page) — see the store's
+  // reconcileSubmission. GET /submissions still serves those derived rows.
 
   // ---------- Events ----------
 

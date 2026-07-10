@@ -9,6 +9,7 @@
 import crypto from "crypto";
 import { formatVolunteerCode } from "./schema.js";
 import { SEED_VOLUNTEERS } from "../data/seed-volunteers.js";
+import { hoursBetween, localHHMM } from "../hours.js";
 
 const nowIso = () => new Date().toISOString();
 
@@ -126,6 +127,44 @@ export function createMemoryStore(seed) {
 
   function insertAtt(row) {
     attendance.push({ id: crypto.randomUUID(), _seq: (insertSeq += 1), ...row });
+  }
+
+  // Keep the volunteer's submission for this event in sync with their
+  // attendance check-in/out times. A submission (= counted service hours) exists
+  // exactly when the attendance row is complete (both times set, checkout after
+  // check-in). This is what makes "hours" flow from the QR scan / manual times,
+  // and why removing/incompleting attendance can't leave a stale row behind.
+  function reconcileSubmission(eventId, volunteerName) {
+    const ev = events.find((e) => e.id === eventId);
+    const row = findAtt(eventId, volunteerName);
+    const idx = submissions.findIndex(
+      (s) => s.eventId === eventId && s.volunteerName === volunteerName
+    );
+    const hrs = row ? hoursBetween(row.checkinAt, row.checkoutAt) : 0;
+    if (!ev || !row || hrs <= 0) {
+      if (idx >= 0) submissions.splice(idx, 1);
+      return;
+    }
+    const vol = volunteers.find((v) => v.name === volunteerName);
+    const fields = {
+      grade: vol?.grade || "",
+      eventName: ev.customName ? ev.customName : ev.name,
+      customEventName: ev.customName || null,
+      eventDate: ev.date,
+      arrivalTime: localHHMM(row.checkinAt),
+      endTime: localHHMM(row.checkoutAt),
+      hours: hrs,
+      comments: idx >= 0 ? submissions[idx].comments : "",
+      submittedAt: nowIso(),
+    };
+    if (idx >= 0) Object.assign(submissions[idx], fields);
+    else
+      submissions.push({
+        id: crypto.randomUUID(),
+        eventId,
+        volunteerName,
+        ...fields,
+      });
   }
 
   // ---------- volunteers ----------
@@ -273,7 +312,9 @@ export function createMemoryStore(seed) {
     if (idx < 0) return false;
     events.splice(idx, 1);
     attendance = attendance.filter((a) => a.eventId !== id); // CASCADE
-    // submissions keep their (now-orphaned) eventId so they stop counting.
+    // Delete this event's derived submissions too, so a deleted event leaves no
+    // orphaned "pending" rows in the roster.
+    submissions = submissions.filter((s) => s.eventId !== id);
     return true;
   }
 
@@ -329,6 +370,7 @@ export function createMemoryStore(seed) {
       });
       row = findAtt(eventId, vol.name);
     }
+    reconcileSubmission(eventId, vol.name);
     return {
       ok: true,
       volunteer: cloneVolunteer(vol),
@@ -362,6 +404,7 @@ export function createMemoryStore(seed) {
       });
       row = findAtt(eventId, vol.name);
     }
+    reconcileSubmission(eventId, vol.name);
     return {
       ok: true,
       volunteer: cloneVolunteer(vol),
@@ -399,6 +442,7 @@ export function createMemoryStore(seed) {
     row.volunteerCheckout = volunteerCheckout;
     row.checkinAt = checkinAt ?? null;
     row.checkoutAt = checkoutAt ?? null;
+    reconcileSubmission(eventId, volunteerName);
     return getEvent(eventId);
   }
 
@@ -407,6 +451,8 @@ export function createMemoryStore(seed) {
     attendance = attendance.filter(
       (a) => !(a.eventId === eventId && a.volunteerName === volunteerName)
     );
+    // Removing a volunteer from an event removes their derived hours too.
+    reconcileSubmission(eventId, volunteerName);
     return getEvent(eventId);
   }
 
@@ -416,73 +462,6 @@ export function createMemoryStore(seed) {
     return [...submissions]
       .sort((a, b) => (a.submittedAt < b.submittedAt ? -1 : 1))
       .map((s) => ({ ...s }));
-  }
-
-  async function upsertSubmission({
-    eventId,
-    volunteerName,
-    grade,
-    arrivalTime,
-    endTime,
-    hours,
-    comments,
-  }) {
-    const ev = events.find((e) => e.id === eventId);
-    if (!ev) return null;
-    const eventName = ev.customName ? ev.customName : ev.name;
-    const customEventName = ev.customName || null;
-
-    let sub = submissions.find(
-      (s) => s.eventId === eventId && s.volunteerName === volunteerName
-    );
-    if (sub) {
-      Object.assign(sub, {
-        grade,
-        eventName,
-        customEventName,
-        eventDate: ev.date,
-        arrivalTime,
-        endTime,
-        hours,
-        comments,
-        submittedAt: nowIso(),
-      });
-    } else {
-      sub = {
-        id: crypto.randomUUID(),
-        eventId,
-        volunteerName,
-        grade,
-        eventName,
-        customEventName,
-        eventDate: ev.date,
-        arrivalTime,
-        endTime,
-        hours,
-        comments,
-        submittedAt: nowIso(),
-      };
-      submissions.push(sub);
-    }
-
-    const row = findAtt(eventId, volunteerName);
-    if (row) {
-      row.volunteerCheckout = true;
-      row.checkoutAt = row.checkoutAt || nowIso();
-      if (!row.volunteerId) row.volunteerId = matchVolunteerId(volunteerName);
-    } else {
-      insertAtt({
-        eventId,
-        volunteerId: matchVolunteerId(volunteerName),
-        volunteerName,
-        staffCheckin: false,
-        checkinAt: null,
-        volunteerCheckout: true,
-        checkoutAt: nowIso(),
-        selfAdded: true,
-      });
-    }
-    return { submission: { ...sub }, event: await getEvent(eventId) };
   }
 
   // ---------- admin ----------
@@ -621,7 +600,6 @@ export function createMemoryStore(seed) {
     patchAttendance,
     removeAttendance,
     listSubmissions,
-    upsertSubmission,
     reset,
     exportAll,
     importAll,

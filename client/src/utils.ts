@@ -151,12 +151,16 @@ export function dedupeSubmissionsByEvent(subs: Submission[]): Submission[] {
 }
 
 export function buildSummaries(
-  volunteerNames: readonly string[],
+  roster: ReadonlyArray<{ name: string; grade?: string }>,
   submissions: Submission[],
   events: VolunteerEvent[]
 ): VolunteerSummary[] {
+  const gradeByName = new Map<string, string>();
   const allByName = new Map<string, Submission[]>();
-  for (const name of volunteerNames) allByName.set(name, []);
+  for (const r of roster) {
+    allByName.set(r.name, []);
+    if (r.grade) gradeByName.set(r.name, r.grade);
+  }
   for (const s of submissions) {
     if (!allByName.has(s.volunteerName)) allByName.set(s.volunteerName, []);
     allByName.get(s.volunteerName)!.push(s);
@@ -173,9 +177,21 @@ export function buildSummaries(
     const totalHours =
       Math.round(counted.reduce((sum, s) => sum + (s.hours || 0), 0) * 100) /
       100;
+    // Prefer the volunteer's own (editable) grade; fall back to the grade on
+    // their latest counted service, then any submission.
     const latestGrade =
-      counted.length > 0 ? counted[0].grade : items[0]?.grade ?? "—";
-    const pendingCount = items.length - counted.length;
+      gradeByName.get(name) ||
+      (counted.length > 0 ? counted[0].grade : items[0]?.grade) ||
+      "—";
+    // Pending = a submission that exists but doesn't count AND whose event still
+    // exists (a deleted event's rows are cleaned up server-side, so they never
+    // linger here).
+    const pendingCount = items.filter(
+      (s) =>
+        s.eventId &&
+        events.some((e) => e.id === s.eventId) &&
+        !isCountableSubmission(s, events)
+    ).length;
     summaries.push({
       name,
       latestGrade,

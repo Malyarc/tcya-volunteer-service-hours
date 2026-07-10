@@ -1,5 +1,4 @@
 import type {
-  NewSubmission,
   Submission,
   VolunteerEvent,
   NewEvent,
@@ -122,7 +121,7 @@ export async function deleteVolunteer(id: string): Promise<void> {
   await handle<{ ok: true }>(res);
 }
 
-// ---------- Submissions ----------
+// ---------- Submissions (read-only; derived from check-in/out times) ----------
 
 export async function fetchSubmissions(): Promise<Submission[]> {
   const res = await fetch(`${API_BASE}/submissions`, {
@@ -130,18 +129,6 @@ export async function fetchSubmissions(): Promise<Submission[]> {
     headers: headers(),
   });
   return handle<Submission[]>(res);
-}
-
-export async function createSubmission(
-  payload: NewSubmission
-): Promise<Submission> {
-  const res = await fetch(`${API_BASE}/submissions`, {
-    method: "POST",
-    headers: headers(true),
-    body: JSON.stringify(payload),
-  });
-  const data = await handle<{ submission: Submission }>(res);
-  return data.submission;
 }
 
 // ---------- Events ----------
