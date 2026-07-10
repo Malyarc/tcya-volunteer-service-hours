@@ -1,13 +1,31 @@
-import * as XLSX from "xlsx";
+import { useState } from "react";
 import type { VolunteerSummary } from "../utils";
-import { displayEventName, formatHours } from "../utils";
+import { displayEventName, formatHours, todayYmd } from "../utils";
 
 interface Props {
   summaries: VolunteerSummary[];
 }
 
 export function ExportButton({ summaries }: Props) {
-  function handleExport() {
+  const [busy, setBusy] = useState(false);
+
+  async function handleExport() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      // Lazy-load the (large) xlsx library only when an export is requested,
+      // keeping it out of the initial app bundle that every volunteer loads.
+      const XLSX = await import("xlsx");
+      buildAndDownload(XLSX);
+    } catch (err) {
+      console.error("Failed to build Excel report", err);
+      alert("Sorry, the Excel report could not be generated. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function buildAndDownload(XLSX: typeof import("xlsx")) {
     const wb = XLSX.utils.book_new();
 
     // Sheet 1: Summary - one row per volunteer with cumulative hours.
@@ -119,7 +137,7 @@ export function ExportButton({ summaries }: Props) {
     ];
     XLSX.utils.book_append_sheet(wb, byVolunteerSheet, "By Volunteer");
 
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = todayYmd();
     XLSX.writeFile(wb, `volunteer-hours-${stamp}.xlsx`);
   }
 
@@ -132,7 +150,8 @@ export function ExportButton({ summaries }: Props) {
         <button
           type="button"
           onClick={handleExport}
-          className="btn-primary px-6 py-3 text-base shadow-md"
+          disabled={busy}
+          className="btn-primary px-6 py-3 text-base shadow-md disabled:cursor-not-allowed disabled:opacity-70"
         >
           <svg
             viewBox="0 0 24 24"
@@ -147,7 +166,7 @@ export function ExportButton({ summaries }: Props) {
             <polyline points="7 10 12 15 17 10" />
             <line x1="12" y1="15" x2="12" y2="3" />
           </svg>
-          Download Excel Report
+          {busy ? "Generating…" : "Download Excel Report"}
         </button>
       </div>
       <p className="text-xs text-slate-500">

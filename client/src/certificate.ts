@@ -28,7 +28,7 @@
 //   - downloadVolunteerCertificate: cumulative across every counted event
 //   - downloadEventCertificate:     one specific event submission
 
-import { jsPDF } from "jspdf";
+import type { jsPDF } from "jspdf";
 import type { Submission } from "./types";
 import { displayEventName, formatHours } from "./utils";
 
@@ -93,7 +93,10 @@ async function buildCertificatePdf({
   hours,
   dateRangeText,
 }: BuildArgs): Promise<jsPDF> {
-  const [logoDataUrl, signatureDataUrl] = await Promise.all([
+  // Lazy-load jsPDF (and its heavy transitive deps) only when a certificate
+  // is actually generated, keeping it out of the initial app bundle.
+  const [{ jsPDF }, logoDataUrl, signatureDataUrl] = await Promise.all([
+    import("jspdf"),
     fetchAsDataUrl(LOGO_URL),
     fetchAsDataUrl(SIGNATURE_URL),
   ]);
@@ -106,13 +109,18 @@ async function buildCertificatePdf({
   // ---------- Header (logo + chapter name, centered) ----------
   const logoWidth = 1.4; // inches
   const logoHeight = 0.79; // matches docx aspect (~1.42 / 0.81)
+  // The last two args (alias, compression) enable FLATE compression on the
+  // embedded bitmap. jsPDF otherwise stores images as raw pixels, which made
+  // the finished PDF ~16 MB for the logo alone.
   doc.addImage(
     logoDataUrl,
     "PNG",
     (pageWidth - logoWidth) / 2,
     0.5,
     logoWidth,
-    logoHeight
+    logoHeight,
+    "cert-logo",
+    "FAST"
   );
 
   let y = 0.5 + logoHeight + 0.15;
@@ -187,7 +195,9 @@ async function buildCertificatePdf({
     marginX,
     y,
     sigWidth,
-    sigHeight
+    sigHeight,
+    "cert-signature",
+    "FAST"
   );
   y += sigHeight + 0.1;
 

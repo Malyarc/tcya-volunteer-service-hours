@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { VolunteerEvent } from "../../types";
-import { formatDate, getEventDisplayName } from "../../utils";
+import { formatDate, getEventDisplayName, todayYmd } from "../../utils";
 
 interface Props {
   events: VolunteerEvent[];
@@ -11,7 +11,7 @@ interface Props {
 export function EventsPanel({ events, onCreate, onOpenEvent }: Props) {
   // Upcoming first (date asc), then past (date desc).
   const sorted = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayYmd();
     const upcoming = events
       .filter((e) => e.date >= today)
       .sort((a, b) => a.date.localeCompare(b.date));
@@ -80,7 +80,7 @@ export function EventsPanel({ events, onCreate, onOpenEvent }: Props) {
               </tr>
             )}
             {sorted.map((ev) => {
-              const today = new Date().toISOString().slice(0, 10);
+              const today = todayYmd();
               const isUpcoming = ev.date >= today;
               const total = ev.attendance?.length ?? 0;
               const confirmed =

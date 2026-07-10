@@ -17,7 +17,7 @@ import {
 import { clearAdminToken, isAdminLoggedIn } from "./auth";
 import type { Submission, VolunteerEvent } from "./types";
 import { VOLUNTEERS } from "./data/volunteers";
-import { buildSummaries, isCountableSubmission } from "./utils";
+import { buildSummaries } from "./utils";
 
 type View = { kind: "home" } | { kind: "event"; eventId: string };
 
@@ -102,18 +102,22 @@ export default function App() {
   const totals = useMemo(() => {
     const totalHours =
       Math.round(summaries.reduce((a, s) => a + s.totalHours, 0) * 10) / 10;
-    const countedSubmissions = submissions.filter((s) =>
-      isCountableSubmission(s, events)
-    ).length;
+    // Derive the submission count from the (deduped, countable) roster
+    // submissions so it stays consistent with the hours shown, rather than
+    // counting raw storage rows that could include legacy duplicates.
+    const totalSubmissions = summaries.reduce(
+      (a, s) => a + s.submissions.length,
+      0
+    );
     const activeVolunteers = summaries.filter(
       (s) => s.submissions.length > 0
     ).length;
     return {
       totalHours,
-      totalSubmissions: countedSubmissions,
+      totalSubmissions,
       activeVolunteers,
     };
-  }, [summaries, submissions, events]);
+  }, [summaries]);
 
   const currentEvent = useMemo(() => {
     if (view.kind !== "event") return null;

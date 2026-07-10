@@ -8,6 +8,7 @@ import {
   formatHours,
   formatTime12h,
   getEventDisplayName,
+  todayYmd,
 } from "../utils";
 
 interface Props {
@@ -67,7 +68,7 @@ export function SubmissionForm({ open, events, onClose, onSubmitted }: Props) {
 
   // Sort events: upcoming/today first (by date asc), then past (date desc).
   const sortedEvents = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayYmd();
     const upcoming = events
       .filter((e) => e.date >= today)
       .sort((a, b) => a.date.localeCompare(b.date));
