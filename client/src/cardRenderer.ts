@@ -45,6 +45,12 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
       img.onerror = () => reject(new Error(`Failed to load image: ${src}`));
       img.src = src;
     });
+    // Never cache a FAILED load: evict on rejection so a later render retries.
+    // Otherwise one transient blip (or a 404 mid-deploy for the non-hashed
+    // public logo) would poison every card render for the whole session.
+    p.catch(() => {
+      if (imageCache.get(src) === p) imageCache.delete(src);
+    });
     imageCache.set(src, p);
   }
   return p;
@@ -86,7 +92,7 @@ function fitOneLine(
     ctx.font = `${weight} ${fs}px ${FONT_STACK}`;
     if (ctx.measureText(text).width <= maxWidth) return fs;
   }
-  return min;
+  return 0; // 0 => does NOT fit on one line even at `min` (caller should wrap)
 }
 
 // Split a name into up to two balanced lines on word boundaries.
@@ -164,20 +170,24 @@ export function drawCard(ctx: CanvasRenderingContext2D, parts: CardParts) {
   ctx.fillStyle = COLORS.name;
 
   const oneLineFs = fitOneLine(ctx, name, nameMaxW, 800, 96, 44);
-  if (oneLineFs >= 44) {
+  if (oneLineFs) {
+    // Fits on one line at >= 44px — the common case.
     ctx.font = `800 ${oneLineFs}px ${FONT_STACK}`;
     ctx.textBaseline = "middle";
     ctx.fillText(name, leftPad, bodyMidY + 4);
   } else {
-    // wrap to two balanced lines
+    // Too long for one line at 44px — wrap to two balanced lines (or, for a
+    // single unsplittable word, shrink it). Either way it must never overflow
+    // into the QR, so every path is measured to fit within nameMaxW.
     const lines = splitTwoLines(name);
     if (lines.length === 1) {
-      ctx.font = `800 44px ${FONT_STACK}`;
+      const fs = fitOneLine(ctx, name, nameMaxW, 800, 44, 18) || 18;
+      ctx.font = `800 ${fs}px ${FONT_STACK}`;
       ctx.textBaseline = "middle";
-      ctx.fillText(lines[0], leftPad, bodyMidY + 4);
+      ctx.fillText(name, leftPad, bodyMidY + 4);
     } else {
       let fs = 72;
-      for (; fs >= 30; fs -= 1) {
+      for (; fs >= 24; fs -= 1) {
         ctx.font = `800 ${fs}px ${FONT_STACK}`;
         if (
           ctx.measureText(lines[0]).width <= nameMaxW &&

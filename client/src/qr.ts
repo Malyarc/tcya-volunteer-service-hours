@@ -69,8 +69,14 @@ export function parseScannedCode(text: string): ParsedScan | null {
     }
     return null;
   }
-  // Bare code
+  // Bare canonical code
   if (CODE_RE.test(trimmed)) return { code: trimmed.toUpperCase() };
+  // Branded display ID typed by hand off a printed card (e.g. "ELA-TCYA-023").
+  // The card / roster only show this form now, so the manual check-in fallback
+  // must accept it — normalize back to the canonical TCYA-#### the store
+  // resolves by (pad the number to the 4-digit minimum the codes use).
+  const branded = /^ELA-TCYA-0*(\d+)$/i.exec(trimmed);
+  if (branded) return { code: `TCYA-${branded[1].padStart(4, "0")}` };
   return null;
 }
 

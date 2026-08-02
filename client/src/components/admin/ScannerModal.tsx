@@ -407,7 +407,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
                 type="text"
                 value={manualCode}
                 onChange={(e) => setManualCode(e.target.value)}
-                placeholder="Enter code e.g. TCYA-0001"
+                placeholder="Enter ID e.g. ELA-TCYA-001"
                 className="input"
               />
               <button type="submit" className="btn-secondary whitespace-nowrap" disabled={!manualCode.trim() || processing}>

@@ -69,6 +69,15 @@ describe("parseScannedCode", () => {
     expect(parseScannedCode("  tcya-0007  ")).toEqual({ code: "TCYA-0007" });
   });
 
+  it("accepts the branded ELA-TCYA-### ID (what staff read off the card) and normalizes it", () => {
+    // The card / roster only show the branded form, so the manual check-in
+    // fallback must accept it and map back to the canonical TCYA-####.
+    expect(parseScannedCode("ELA-TCYA-001")).toEqual({ code: "TCYA-0001" });
+    expect(parseScannedCode("ELA-TCYA-023")).toEqual({ code: "TCYA-0023" });
+    expect(parseScannedCode("  ela-tcya-048  ")).toEqual({ code: "TCYA-0048" });
+    expect(parseScannedCode("ELA-TCYA-1000")).toEqual({ code: "TCYA-1000" });
+  });
+
   it("rejects foreign QR payloads and garbage", () => {
     expect(parseScannedCode('{"t":"OTHER-APP","code":"X"}')).toBeNull();
     expect(parseScannedCode("https://example.com")).toBeNull();
