@@ -29,10 +29,13 @@ verified live on https://tcyavolunteers.netlify.app.
 
 ### 2. New QR ID-card design (the chapter's own design)
 
-- New card = light-blue header band (lotus logo + "Tzu Chi Youth Association US" /
-  "East LA 東洛慈少"), big bold name, QR, and a branded **ELA-TCYA-###** ID under it.
-  Contact details are intentionally NOT on the card (data minimization); the QR
-  still encodes only `{t,v,id,code,name}`.
+- New card = light-blue header band with the **lotus + cupped-hands + candle logo
+  (`/cert-logo.png`, NOT `/tzu-chi-logo.png` — the ship emblem)** + right-aligned
+  "Tzu Chi Youth Association US" / "East LA 東洛慈少", big bold name on the left, QR
+  upper-right, and a branded **ELA-TCYA-###** ID centered under the QR — matching
+  the chapter's own sample card. **Long names wrap to two rows: first name on row 1,
+  last name on row 2** (short names stay one line). Contact details are intentionally
+  NOT on the card (data minimization); the QR still encodes only `{t,v,id,code,name}`.
 - One canvas renderer (`client/src/cardRenderer.ts`) feeds the modal preview, the
   PNG download, clipboard copy, and the single + bulk PDFs — WYSIWYG.
 - **Display ID `ELA-TCYA-001` is shown everywhere** (card, QR modal, admin roster,
