@@ -2,15 +2,16 @@
 // every surface — the on-screen preview, the PNG download, clipboard copy, and
 // the single/bulk PDFs — so what you preview is exactly what prints.
 //
-// Layout matches the chapter's own card design:
-//   ┌───────────────────────────────────────────┐
-//   │  [lotus]        Tzu Chi Youth Association US │  ← light-blue header band
-//   │                       East LA 東洛慈少        │
-//   ├───────────────────────────────────────────┤
-//   │                                   [ QR ]     │
-//   │   Amber Wang                                 │  ← big name (left) + QR (right)
-//   │                                ELA-TCYA-001  │  ← branded display ID under QR
-//   └───────────────────────────────────────────┘
+// Layout reproduces the chapter's own sample card:
+//   ┌───────────────────────────────────────────────┐
+//   │  [lotus+candle]     Tzu Chi Youth Association US │  ← light-blue header band
+//   │                          East LA 東洛慈少         │
+//   │                                                  │
+//   │                                    ▉▉ QR ▉▉      │  ← QR (right)
+//   │   Amber Wang                       ▉▉▉▉▉▉▉▉      │  ← big name (left)
+//   │                                   ELA-TCYA-001    │  ← branded ID under the QR
+//   └───────────────────────────────────────────────┘
+// Long names wrap to two rows: first name on row 1, last name on row 2.
 
 import type { Volunteer } from "./types";
 import { buildQrPayload, qrPngDataUrl, formatDisplayId } from "./qr";
@@ -24,15 +25,15 @@ const FONT_STACK =
   "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
 const COLORS = {
-  band: "#cfe0f4", // soft "blue sky" 藍天 header
-  bandLine: "#b4cbe8",
-  border: "#dbe3ec",
-  org: "#1f2b45",
-  orgBold: "#0f2f55",
-  name: "#0b1220",
-  id: "#334155",
-  qrQuiet: "#ffffff",
+  band: "#c9ddf5", // soft "blue sky" 藍天 header
+  border: "#e3e8ee",
+  org: "#1f2733", // near-black org text
+  name: "#0a0a0b",
+  id: "#2a2f3a",
 };
+
+// The lotus + cupped-hands + candle logo (same asset as the certificate).
+const LOGO_SRC = "/cert-logo.png";
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
 export function loadImage(src: string): Promise<HTMLImageElement> {
@@ -78,8 +79,8 @@ function drawContain(
   ctx.drawImage(img, x, y, w, h);
 }
 
-// Fit `text` onto one line within maxWidth by shrinking font from `max` to `min`.
-// Returns the chosen px size (min if it never fits).
+// Largest px size in [min, max] at which `text` fits on one line within
+// maxWidth. Returns 0 if it doesn't fit even at `min` (caller should wrap).
 function fitOneLine(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -92,26 +93,15 @@ function fitOneLine(
     ctx.font = `${weight} ${fs}px ${FONT_STACK}`;
     if (ctx.measureText(text).width <= maxWidth) return fs;
   }
-  return 0; // 0 => does NOT fit on one line even at `min` (caller should wrap)
+  return 0;
 }
 
-// Split a name into up to two balanced lines on word boundaries.
-function splitTwoLines(name: string): [string] | [string, string] {
-  const words = name.trim().split(/\s+/);
-  if (words.length < 2) return [name];
-  // find the split that most evenly balances character counts
-  let best = 1;
-  let bestDiff = Infinity;
-  for (let i = 1; i < words.length; i++) {
-    const a = words.slice(0, i).join(" ").length;
-    const b = words.slice(i).join(" ").length;
-    const diff = Math.abs(a - b);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      best = i;
-    }
-  }
-  return [words.slice(0, best).join(" "), words.slice(best).join(" ")];
+// Split a name into [firstName, lastName]: first whitespace-token is the first
+// name, everything after is the last name. null when there's no space to split.
+function splitFirstLast(name: string): [string, string] | null {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return null;
+  return [parts[0], parts.slice(1).join(" ")];
 }
 
 export interface CardParts {
@@ -125,82 +115,79 @@ export interface CardParts {
 // path can also draw straight onto a scaled canvas.
 export function drawCard(ctx: CanvasRenderingContext2D, parts: CardParts) {
   const { logo, qr, name, displayId } = parts;
-  const bandH = 196;
+  const bandH = 206;
 
   // background + header band
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, CARD_W, CARD_H);
   ctx.fillStyle = COLORS.band;
   ctx.fillRect(0, 0, CARD_W, bandH);
-  ctx.fillStyle = COLORS.bandLine;
-  ctx.fillRect(0, bandH, CARD_W, 2);
 
-  // logo (left, vertically centered in band)
-  drawContain(ctx, logo, 34, 24, 250, bandH - 48, "left");
+  // logo (left, vertically centered in the band)
+  drawContain(ctx, logo, 46, 16, 256, bandH - 34, "left");
 
-  // org text (right-aligned)
+  // org text (right-aligned): regular line 1, bold line 2
+  const orgRight = CARD_W - 52;
   ctx.textAlign = "right";
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = COLORS.org;
-  ctx.font = `500 40px ${FONT_STACK}`;
-  ctx.fillText("Tzu Chi Youth Association US", CARD_W - 40, 86);
-  ctx.fillStyle = COLORS.orgBold;
-  ctx.font = `800 48px ${FONT_STACK}`;
-  ctx.fillText("East LA 東洛慈少", CARD_W - 40, 150);
+  ctx.font = `500 44px ${FONT_STACK}`;
+  ctx.fillText("Tzu Chi Youth Association US", orgRight, 82);
+  ctx.font = `700 50px ${FONT_STACK}`;
+  ctx.fillText("East LA 東洛慈少", orgRight, 152);
 
-  // QR (bottom-right) on a white quiet zone
-  const qrSize = 248;
-  const qrX = CARD_W - 44 - qrSize;
-  const qrY = bandH + 30;
-  ctx.fillStyle = COLORS.qrQuiet;
-  ctx.fillRect(qrX - 8, qrY - 8, qrSize + 16, qrSize + 16);
+  // QR (right) — vertically centered in the body, ID centered beneath it
+  const qrSize = 224;
+  const qrRightMargin = 74;
+  const qrX = CARD_W - qrRightMargin - qrSize;
+  const idGap = 40;
+  const bodyTop = bandH;
+  const bodyH = CARD_H - bandH;
+  const qrY = bodyTop + (bodyH - (qrSize + idGap)) / 2;
   ctx.drawImage(qr, qrX, qrY, qrSize, qrSize);
 
-  // display ID centered under the QR
   ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
   ctx.fillStyle = COLORS.id;
   ctx.font = `600 30px ${FONT_STACK}`;
-  ctx.fillText(displayId, qrX + qrSize / 2, qrY + qrSize + 36);
+  ctx.fillText(displayId, qrX + qrSize / 2, qrY + qrSize + 34);
 
-  // name (left), vertically centered in the white body, fit to width
-  const leftPad = 52;
-  const nameMaxW = qrX - 24 - leftPad;
-  const bodyMidY = bandH + (CARD_H - bandH) / 2;
+  // name (left) — one big line if it fits; otherwise first name on row 1 and
+  // last name on row 2. Vertically centered in the white body.
+  const nameLeft = 60;
+  const nameMaxW = qrX - 44 - nameLeft;
+  const bodyMidY = bodyTop + bodyH / 2;
   ctx.textAlign = "left";
   ctx.fillStyle = COLORS.name;
 
-  const oneLineFs = fitOneLine(ctx, name, nameMaxW, 800, 96, 44);
-  if (oneLineFs) {
-    // Fits on one line at >= 44px — the common case.
-    ctx.font = `800 ${oneLineFs}px ${FONT_STACK}`;
+  const oneLine = fitOneLine(ctx, name, nameMaxW, 800, 116, 78);
+  const firstLast = splitFirstLast(name);
+  if (oneLine) {
+    ctx.font = `800 ${oneLine}px ${FONT_STACK}`;
     ctx.textBaseline = "middle";
-    ctx.fillText(name, leftPad, bodyMidY + 4);
-  } else {
-    // Too long for one line at 44px — wrap to two balanced lines (or, for a
-    // single unsplittable word, shrink it). Either way it must never overflow
-    // into the QR, so every path is measured to fit within nameMaxW.
-    const lines = splitTwoLines(name);
-    if (lines.length === 1) {
-      const fs = fitOneLine(ctx, name, nameMaxW, 800, 44, 18) || 18;
+    ctx.fillText(name, nameLeft, bodyMidY + 6);
+  } else if (firstLast) {
+    // Two rows: first name, then last name — each as large as fits.
+    let fs = 104;
+    for (; fs >= 40; fs -= 2) {
       ctx.font = `800 ${fs}px ${FONT_STACK}`;
-      ctx.textBaseline = "middle";
-      ctx.fillText(name, leftPad, bodyMidY + 4);
-    } else {
-      let fs = 72;
-      for (; fs >= 24; fs -= 1) {
-        ctx.font = `800 ${fs}px ${FONT_STACK}`;
-        if (
-          ctx.measureText(lines[0]).width <= nameMaxW &&
-          ctx.measureText(lines[1]).width <= nameMaxW
-        )
-          break;
-      }
-      ctx.font = `800 ${fs}px ${FONT_STACK}`;
-      ctx.textBaseline = "alphabetic";
-      const lineH = fs * 1.16;
-      ctx.fillText(lines[0], leftPad, bodyMidY - lineH / 2 + fs * 0.36);
-      ctx.fillText(lines[1], leftPad, bodyMidY + lineH / 2 + fs * 0.36);
+      if (
+        ctx.measureText(firstLast[0]).width <= nameMaxW &&
+        ctx.measureText(firstLast[1]).width <= nameMaxW
+      )
+        break;
     }
+    ctx.font = `800 ${fs}px ${FONT_STACK}`;
+    ctx.textBaseline = "alphabetic";
+    const lineH = fs * 1.12;
+    ctx.fillText(firstLast[0], nameLeft, bodyMidY - lineH / 2 + fs * 0.35);
+    ctx.fillText(firstLast[1], nameLeft, bodyMidY + lineH / 2 + fs * 0.35);
+  } else {
+    // Single unsplittable token too long for one line — shrink to fit.
+    const fs = fitOneLine(ctx, name, nameMaxW, 800, 78, 34) || 34;
+    ctx.font = `800 ${fs}px ${FONT_STACK}`;
+    ctx.textBaseline = "middle";
+    ctx.fillText(name, nameLeft, bodyMidY + 6);
   }
 
   // subtle outer border (drawn last so it sits on top)
@@ -208,8 +195,6 @@ export function drawCard(ctx: CanvasRenderingContext2D, parts: CardParts) {
   ctx.lineWidth = 2;
   ctx.strokeRect(1, 1, CARD_W - 2, CARD_H - 2);
 }
-
-const LOGO_SRC = "/tzu-chi-logo.png";
 
 // Render a volunteer's card to a PNG data URL. `scale` super-samples for crisp
 // print output (2 => 600dpi on a 3.5×2in card).
