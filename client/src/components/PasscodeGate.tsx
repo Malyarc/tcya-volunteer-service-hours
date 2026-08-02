@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useFocusTrap } from "../useFocusTrap";
 
 const PASSCODE = "1994";
 const LENGTH = PASSCODE.length;
@@ -12,6 +13,8 @@ export function PasscodeGate({ onUnlock }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [shaking, setShaking] = useState(false);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, true);
 
   useEffect(() => {
     inputsRef.current[0]?.focus();
@@ -99,6 +102,7 @@ export function PasscodeGate({ onUnlock }: Props) {
       <div className="absolute inset-0 bg-brand-900/30" aria-hidden />
 
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="passcode-title"
