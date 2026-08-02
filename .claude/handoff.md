@@ -42,6 +42,22 @@ verified live on https://tcyavolunteers.netlify.app.
 - Verified in the running app: cards render correctly; every name (longest fits at
   60px) clears the QR; display IDs show on the roster; no console errors.
 
+### Post-launch adversarial review (bugs found + fixed)
+
+A multi-agent adversarial bug hunt over the go-live diff confirmed the imported
+data is invariant-consistent (submissions exactly equal what reconcile re-derives)
+and found 3 real defects in the new card feature, all now fixed + verified:
+
+- **Card name-wrap was dead code** — `fitOneLine` returned its `min` on both fit and
+  non-fit, so the two-line wrap never ran and a long admin-added name would overflow
+  the QR. Fixed (returns 0 on non-fit); long names now wrap ("Maria Guadalupe /
+  Hernandez Rodriguez") or shrink, verified in-app.
+- **`loadImage` cached rejected promises** — one transient logo-load failure poisoned
+  every card render until reload. Now evicts on failure.
+- **Manual check-in rejected the branded ID** — the card only shows `ELA-TCYA-###`;
+  `parseScannedCode` now normalizes that back to `TCYA-####` (unit-tested), and the
+  scanner placeholder was updated.
+
 ### Durability posture (operator: the data is real now — protect it)
 
 - The single-replace go-live import is DONE. Do NOT run another replace-all import,
