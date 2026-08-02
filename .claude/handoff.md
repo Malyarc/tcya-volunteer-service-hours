@@ -58,6 +58,33 @@ and found 3 real defects in the new card feature, all now fixed + verified:
   `parseScannedCode` now normalizes that back to `TCYA-####` (unit-tested), and the
   scanner placeholder was updated.
 
+### Full live UX/UI/a11y audit (2026-08-02) — done + fixed
+
+Full live clickthrough (prod read-only + local for mutations) of every screen,
+button, modal, and state at desktop/tablet/mobile, plus a 30-agent code-level
+audit (22 confirmed findings). All real issues fixed + verified live:
+
+- **AdminTabs** no longer overflows horizontally (removed `-mx-4/-mx-6`); the page
+  no longer scrolls sideways on any admin screen (0px overflow, verified prod).
+- **Volunteers panel** shows "Loading volunteers…" instead of flashing
+  "No volunteers yet" (looked wiped) before the first fetch resolves.
+- **Duplicate-name flow**: one "Add anyway?" prompt, branded `ELA-TCYA-###`, and a
+  plain "Not added…" message on decline (was a dangling raw-code question).
+- Fixed stale copy: custom fields are NOT on the new card (roster export instead).
+- **a11y**: shared `useFocusTrap` on all 5 modals (Tab containment + focus restore);
+  `PasscodeGate` role=dialog; aria-labels on placeholder-only inputs; Toast
+  aria-live; CreateEvent autofocus; password eye keyboard-reachable; low-contrast
+  slate-400 sentences → slate-500.
+- **VolunteerQRModal** scrolls on short/landscape viewports (close button reachable).
+- **EventDetailPage** per-row pending (toggling one attendee no longer greys all);
+  larger tap targets. **ScannerModal** recent-scan truncation + picker reset.
+- **VolunteerTable** cause-aware empty state.
+
+Interactive flows all verified working: passcode (wrong/right), roster expand +
+search + filter + certificate download, add/edit/duplicate volunteer, QR card
+copy/PNG/PDF/email, bulk PDF + Excel, create event (preset + Others custom), event
+detail add/toggle/edit-times (hours derive) + scanner manual entry (branded ID).
+
 ### Durability posture (operator: the data is real now — protect it)
 
 - The single-replace go-live import is DONE. Do NOT run another replace-all import,
