@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { AttendanceEntry, Volunteer, VolunteerEvent } from "../../types";
+import { formatDisplayId } from "../../qr";
 import {
   formatClockFromIso,
   formatDateLong,
@@ -470,7 +471,7 @@ function AttendanceRow({
         <td className="px-4 py-2.5">
           <div className="font-medium text-slate-900">{entry.volunteerName}</div>
           {entry.code && (
-            <div className="text-[11px] font-medium text-slate-400">{entry.code}</div>
+            <div className="text-[11px] font-medium text-slate-400">{formatDisplayId(entry.code)}</div>
           )}
         </td>
         <td className="px-4 py-2.5 text-center">

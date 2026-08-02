@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Volunteer, VolunteerEvent } from "../../types";
 import { checkInByCode, checkOutByCode } from "../../api";
-import { parseScannedCode } from "../../qr";
+import { parseScannedCode, formatDisplayId } from "../../qr";
 import { formatClockFromIso, getEventDisplayName } from "../../utils";
 
 type Mode = "in" | "out";
@@ -421,7 +421,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
                   .sort((a, b) => a.name.localeCompare(b.name))
                   .map((v) => (
                     <option key={v.id} value={v.id}>
-                      {v.name} · {v.code}
+                      {v.name} · {formatDisplayId(v.code)}
                     </option>
                   ))}
               </select>

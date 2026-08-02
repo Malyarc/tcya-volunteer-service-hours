@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Volunteer } from "../../types";
 import { GRADES } from "../../data/events";
 import { createVolunteer, updateVolunteer } from "../../api";
+import { formatDisplayId } from "../../qr";
 
 interface Props {
   open: boolean;
@@ -134,7 +135,7 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
             </h2>
             <p className="text-sm text-slate-500">
               {volunteer
-                ? `Editing ${volunteer.name} · ${volunteer.code}`
+                ? `Editing ${volunteer.name} · ${formatDisplayId(volunteer.code)}`
                 : "A unique QR code is generated automatically."}
             </p>
           </div>
