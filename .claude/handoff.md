@@ -36,8 +36,9 @@ verified live on https://tcyavolunteers.netlify.app.
 - One canvas renderer (`client/src/cardRenderer.ts`) feeds the modal preview, the
   PNG download, clipboard copy, and the single + bulk PDFs — WYSIWYG.
 - **Display ID `ELA-TCYA-001` is shown everywhere** (card, QR modal, admin roster,
-  Excel export) via `formatDisplayId()`; the stored `code` + QR payload stay the
-  canonical `TCYA-0001`, so scanning/identity are unchanged.
+  Excel export, event attendance list, edit-volunteer modal, scanner manual pick)
+  via `formatDisplayId()`; the stored `code` + QR payload stay the canonical
+  `TCYA-0001`, so scanning/identity are unchanged.
 - Verified in the running app: cards render correctly; every name (longest fits at
   60px) clears the QR; display IDs show on the roster; no console errors.
 
