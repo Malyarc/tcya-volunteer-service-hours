@@ -153,14 +153,13 @@ export function VolunteersPanel({ volunteers, loading = false, onChanged, onToas
               <Th>Volunteer</Th>
               <Th>ID</Th>
               <Th className="hidden md:table-cell">Grade</Th>
-              <Th className="hidden md:table-cell">Contact</Th>
               <Th className="text-right">QR / Actions</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-5 py-10 text-center text-sm text-slate-500">
+                <td colSpan={4} className="px-5 py-10 text-center text-sm text-slate-500">
                   {loading && volunteers.length === 0
                     ? "Loading volunteers…"
                     : volunteers.length === 0
@@ -169,9 +168,7 @@ export function VolunteersPanel({ volunteers, loading = false, onChanged, onToas
                 </td>
               </tr>
             )}
-            {filtered.map((v) => {
-              const fieldCount = Object.keys(v.customFields || {}).length;
-              return (
+            {filtered.map((v) => (
                 <tr key={v.id} className="hover:bg-brand-50/30">
                   <td className="whitespace-nowrap px-5 py-3">
                     <div className="flex items-center gap-3">
@@ -184,18 +181,6 @@ export function VolunteersPanel({ volunteers, loading = false, onChanged, onToas
                   </td>
                   <td className="hidden md:table-cell whitespace-nowrap px-4 py-3 text-sm text-slate-600">
                     {v.grade || "—"}
-                  </td>
-                  <td className="hidden md:table-cell px-4 py-3 text-sm text-slate-600">
-                    <div className="max-w-[220px]">
-                      {v.email && <div className="truncate">{v.email}</div>}
-                      {v.phone && <div className="truncate text-slate-500">{v.phone}</div>}
-                      {!v.email && !v.phone && <span className="text-slate-400">—</span>}
-                      {fieldCount > 0 && (
-                        <span className="mt-0.5 inline-block badge bg-slate-100 text-slate-500">
-                          +{fieldCount} field{fieldCount > 1 ? "s" : ""}
-                        </span>
-                      )}
-                    </div>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-1">
@@ -222,8 +207,7 @@ export function VolunteersPanel({ volunteers, loading = false, onChanged, onToas
                     </div>
                   </td>
                 </tr>
-              );
-            })}
+              ))}
           </tbody>
         </table>
       </div>
