@@ -1,35 +1,34 @@
 import { useEffect, useState } from "react";
 import type { Volunteer } from "../../types";
-import {
-  buildQrPayload,
-  qrPngDataUrl,
-  dataUrlToBlob,
-} from "../../qr";
-import { downloadVolunteerQrPng, downloadIdCardPdf } from "../../volunteerExports";
+import { dataUrlToBlob, formatDisplayId } from "../../qr";
+import { renderCardPng } from "../../cardRenderer";
+import { downloadIdCardPng, downloadIdCardPdf } from "../../volunteerExports";
 
 interface Props {
   volunteer: Volunteer | null;
   onClose: () => void;
 }
 
-// A volunteer's QR "ID card": the scannable code plus their details, with
-// one-click ways for staff to copy / download / email it to the volunteer.
+// A volunteer's QR "ID card": the chapter's card design (logo + name + QR +
+// branded ID) rendered exactly as it downloads/prints, with one-click ways for
+// staff to copy / download / email it. Contact details are intentionally NOT on
+// the card or in the QR — only the name + display ID show (data minimization).
 export function VolunteerQRModal({ volunteer, onClose }: Props) {
-  const [qrUrl, setQrUrl] = useState<string>("");
+  const [cardUrl, setCardUrl] = useState<string>("");
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!volunteer) return;
     let cancelled = false;
-    setQrUrl("");
+    setCardUrl("");
     setStatus(null);
-    qrPngDataUrl(buildQrPayload(volunteer), 512)
+    renderCardPng(volunteer)
       .then((url) => {
-        if (!cancelled) setQrUrl(url);
+        if (!cancelled) setCardUrl(url);
       })
       .catch(() => {
-        if (!cancelled) setStatus("Could not render the QR code.");
+        if (!cancelled) setStatus("Could not render the ID card.");
       });
     return () => {
       cancelled = true;
@@ -47,20 +46,20 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
 
   if (!volunteer) return null;
   const v = volunteer;
+  const displayId = formatDisplayId(v.code);
 
   async function copyImage() {
     setStatus(null);
     try {
-      const dataUrl = qrUrl || (await qrPngDataUrl(buildQrPayload(v), 512));
+      const dataUrl = cardUrl || (await renderCardPng(v));
       const blob = dataUrlToBlob(dataUrl);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const CI: any = (window as any).ClipboardItem;
       if (CI && navigator.clipboard && "write" in navigator.clipboard) {
         await navigator.clipboard.write([new CI({ [blob.type]: blob })]);
-        setStatus("QR image copied — paste it into an email or text.");
+        setStatus("ID card image copied — paste it into an email or text.");
       } else {
-        await navigator.clipboard.writeText(buildQrPayload(v));
-        setStatus("Image copy unsupported here; copied the QR data text instead.");
+        setStatus("Image copy isn't supported here — use Download instead.");
       }
     } catch {
       setStatus("Copy failed. Use Download instead.");
@@ -80,21 +79,22 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
     }
   }
 
-  function emailQr() {
-    // Download the image so staff can attach it, then open a pre-filled draft.
-    withBusy(() => downloadVolunteerQrPng(v), "QR image downloaded — attach it to the email draft.");
+  function emailCard() {
+    // Download the card image so staff can attach it, then open a pre-filled draft.
+    withBusy(
+      () => downloadIdCardPng(v),
+      "ID card downloaded — attach it to the email draft."
+    );
     const subject = encodeURIComponent("Your TCYA Volunteer Check-in QR Code");
     const body = encodeURIComponent(
       `Hi ${v.name},\n\n` +
-        `Attached is your personal TCYA volunteer QR code (ID: ${v.code}). ` +
-        `Please save it to your phone — staff will scan it to check you in and out at events.\n\n` +
+        `Attached is your personal TCYA volunteer ID card (ID: ${displayId}). ` +
+        `Please save it to your phone — staff will scan the QR code to check you in and out at events.\n\n` +
         `Thank you for volunteering!\nTzu Chi Youth Association — East LA`
     );
     const to = v.email ? encodeURIComponent(v.email) : "";
     window.open(`mailto:${to}?subject=${subject}&body=${body}`, "_blank");
   }
-
-  const customEntries = Object.entries(v.customFields || {});
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
@@ -115,7 +115,7 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
               Volunteer QR ID Card
             </h2>
             <p className="text-sm text-slate-500">
-              Copy, download, or email this to {v.name.split(" ")[0]}.
+              {v.name} · {displayId}
             </p>
           </div>
           <button
@@ -131,40 +131,19 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
         </div>
 
         <div className="px-6 py-5">
-          {/* ID card */}
-          <div className="mx-auto max-w-sm overflow-hidden rounded-2xl border border-slate-200 shadow-sm">
-            <div className="bg-gradient-to-br from-brand-700 to-brand-600 px-4 py-2 text-center text-[11px] font-semibold uppercase tracking-wider text-white">
-              Tzu Chi Youth Association — East LA
-            </div>
-            <div className="flex items-center gap-4 px-4 py-4">
-              <div className="flex h-32 w-32 flex-none items-center justify-center rounded-lg border border-slate-200 bg-white">
-                {qrUrl ? (
-                  <img src={qrUrl} alt={`QR code for ${v.name}`} className="h-32 w-32" />
-                ) : (
-                  <span className="text-xs text-slate-400">Rendering…</span>
-                )}
+          {/* ID card — rendered exactly as it downloads / prints */}
+          <div className="mx-auto max-w-md overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+            {cardUrl ? (
+              <img
+                src={cardUrl}
+                alt={`ID card for ${v.name}`}
+                className="block w-full"
+              />
+            ) : (
+              <div className="flex aspect-[1050/600] w-full items-center justify-center bg-slate-50 text-xs text-slate-400">
+                {status || "Rendering…"}
               </div>
-              <div className="min-w-0">
-                <div className="truncate text-base font-bold text-slate-900">
-                  {v.name}
-                </div>
-                <div className="text-sm font-semibold text-brand-700">{v.code}</div>
-                {v.grade && (
-                  <div className="text-xs text-slate-500">Grade {v.grade}</div>
-                )}
-                {v.phone && (
-                  <div className="mt-1 truncate text-xs text-slate-600">{v.phone}</div>
-                )}
-                {v.email && (
-                  <div className="truncate text-xs text-slate-600">{v.email}</div>
-                )}
-                {customEntries.map(([k, val]) => (
-                  <div key={k} className="truncate text-xs text-slate-500">
-                    <span className="font-medium">{k}:</span> {val}
-                  </div>
-                ))}
-              </div>
-            </div>
+            )}
           </div>
 
           {status && (
@@ -175,9 +154,9 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
 
           {/* Actions */}
           <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <ActionButton onClick={copyImage} disabled={busy} label="Copy image" icon="copy" />
+            <ActionButton onClick={copyImage} disabled={busy || !cardUrl} label="Copy image" icon="copy" />
             <ActionButton
-              onClick={() => withBusy(() => downloadVolunteerQrPng(v), "QR PNG downloaded.")}
+              onClick={() => withBusy(() => downloadIdCardPng(v), "ID card PNG downloaded.")}
               disabled={busy}
               label="Download PNG"
               icon="download"
@@ -189,7 +168,7 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
               icon="card"
             />
             <ActionButton
-              onClick={emailQr}
+              onClick={emailCard}
               disabled={busy || !v.email}
               label="Email"
               icon="mail"
@@ -197,9 +176,9 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
             />
           </div>
           <p className="mt-3 text-center text-[11px] text-slate-400">
-            The QR encodes only {v.name.split(" ")[0]}'s name and unique ID ({v.code}) —
-            staff scan it to check in / out. Contact details are printed on the card,
-            never inside the code.
+            The QR encodes only {v.name.split(" ")[0]}'s name and unique ID ({displayId}) —
+            staff scan it to check in / out. Contact details are never on the card
+            or inside the code.
           </p>
         </div>
       </div>

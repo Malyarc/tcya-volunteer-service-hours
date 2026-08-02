@@ -23,7 +23,9 @@ describe("buildRosterSheetData", () => {
       vol({ code: "TCYA-0001", name: "Aaron Tse", email: "a@x.com", phone: "555", grade: "10th" }),
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0].Code).toBe("TCYA-0001");
+    // Visible ID is the branded display form; canonical code lives in QR Payload.
+    expect(rows[0].ID).toBe("ELA-TCYA-001");
+    expect(rows[0].Code).toBeUndefined();
     expect(rows[0].Name).toBe("Aaron Tse");
     expect(rows[0].Email).toBe("a@x.com");
     expect(rows[0].Phone).toBe("555");

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { Volunteer } from "../../types";
 import { deleteVolunteer } from "../../api";
+import { formatDisplayId } from "../../qr";
 import {
   downloadQrIdCardsPdf,
   exportVolunteersExcel,
@@ -32,6 +33,7 @@ export function VolunteersPanel({ volunteers, onChanged, onToast }: Props) {
       (v) =>
         v.name.toLowerCase().includes(q) ||
         v.code.toLowerCase().includes(q) ||
+        formatDisplayId(v.code).toLowerCase().includes(q) ||
         (v.email || "").toLowerCase().includes(q) ||
         (v.phone || "").toLowerCase().includes(q)
     );
@@ -49,7 +51,7 @@ export function VolunteersPanel({ volunteers, onChanged, onToast }: Props) {
   async function handleDelete(v: Volunteer) {
     if (
       !window.confirm(
-        `Remove ${v.name} (${v.code}) from the roster? Their past event history is kept, but they'll no longer appear in the volunteer list or be scannable.`
+        `Remove ${v.name} (${formatDisplayId(v.code)}) from the roster? Their past event history is kept, but they'll no longer appear in the volunteer list or be scannable.`
       )
     )
       return;
@@ -145,7 +147,7 @@ export function VolunteersPanel({ volunteers, onChanged, onToast }: Props) {
           <thead className="bg-slate-50/70">
             <tr>
               <Th>Volunteer</Th>
-              <Th>Code</Th>
+              <Th>ID</Th>
               <Th className="hidden md:table-cell">Grade</Th>
               <Th className="hidden md:table-cell">Contact</Th>
               <Th className="text-right">QR / Actions</Th>
@@ -172,7 +174,7 @@ export function VolunteersPanel({ volunteers, onChanged, onToast }: Props) {
                     </div>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-brand-700">
-                    {v.code}
+                    {formatDisplayId(v.code)}
                   </td>
                   <td className="hidden md:table-cell whitespace-nowrap px-4 py-3 text-sm text-slate-600">
                     {v.grade || "—"}
@@ -228,7 +230,7 @@ export function VolunteersPanel({ volunteers, onChanged, onToast }: Props) {
           setFormOpen(false);
           onChanged();
           if (created) {
-            onToast(`Added ${v.name} (${v.code}).`);
+            onToast(`Added ${v.name} (${formatDisplayId(v.code)}).`);
             setQrVolunteer(v); // jump straight to their QR so staff can send it
           } else {
             onToast(`Updated ${v.name}.`);

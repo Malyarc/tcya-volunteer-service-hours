@@ -6,9 +6,16 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { SEED_VOLUNTEERS } from "../src/data/seed-volunteers.js";
 
 export function runSuite(withServer, label) {
   const name = (t) => `[${label}] ${t}`;
+
+  // Fixture names are derived from the seed so the suite stays correct when the
+  // roster changes. V1 is seeded first, so it is always assigned TCYA-0001; V2
+  // is a distinct second seeded volunteer. Both are plain-ASCII seed entries.
+  const V1 = SEED_VOLUNTEERS[0];
+  const V2 = SEED_VOLUNTEERS[1];
 
   async function adminToken(api) {
     const r = await api.send("POST", "/api/login", {
@@ -104,7 +111,7 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const vols = (await api.get("/api/volunteers", auth)).body;
-      const aaron = vols.find((v) => v.name === "Aaron Tse");
+      const aaron = vols.find((v) => v.name === V1);
       await api.send(
         "PATCH",
         `/api/volunteers/${aaron.id}`,
@@ -114,7 +121,7 @@ export function runSuite(withServer, label) {
       const roster = await api.get("/api/roster");
       assert.equal(roster.status, 200);
       assert.ok(Array.isArray(roster.body));
-      const r = roster.body.find((x) => x.name === "Aaron Tse");
+      const r = roster.body.find((x) => x.name === V1);
       assert.ok(r);
       assert.deepEqual(Object.keys(r).sort(), ["grade", "name"]);
       assert.equal(JSON.stringify(roster.body).includes("555-1234"), false);
@@ -124,12 +131,12 @@ export function runSuite(withServer, label) {
 
   // ---------------- Volunteers ----------------
 
-  test(name("volunteers seed with sequential TCYA codes; Aaron is TCYA-0001"), async () => {
+  test(name("volunteers seed with sequential TCYA codes; first seeded is TCYA-0001"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const vols = (await api.get("/api/volunteers", auth)).body;
-      assert.ok(vols.length >= 90);
-      const aaron = vols.find((v) => v.name === "Aaron Tse");
+      assert.ok(vols.length >= SEED_VOLUNTEERS.length);
+      const aaron = vols.find((v) => v.name === V1);
       assert.equal(aaron.code, "TCYA-0001");
       assert.match(aaron.code, /^TCYA-\d{4}$/);
     });
@@ -174,27 +181,27 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       const vols = (await api.get("/api/volunteers", auth)).body;
-      const aaron = vols.find((v) => v.name === "Aaron Tse");
+      const aaron = vols.find((v) => v.name === V1);
 
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
 
       const renamed = await api.send(
         "PATCH",
         `/api/volunteers/${aaron.id}`,
-        { name: "Aaron Tse Jr" },
+        { name: `${V1} Jr` },
         auth
       );
       assert.equal(renamed.status, 200);
 
       const ev = (await api.get("/api/events")).body[0];
-      assert.ok(ev.attendance.some((a) => a.volunteerName === "Aaron Tse Jr"));
-      assert.equal(ev.attendance.some((a) => a.volunteerName === "Aaron Tse"), false);
+      assert.ok(ev.attendance.some((a) => a.volunteerName === `${V1} Jr`));
+      assert.equal(ev.attendance.some((a) => a.volunteerName === V1), false);
 
       const subs = (await api.get("/api/submissions")).body;
-      assert.ok(subs.some((s) => s.volunteerName === "Aaron Tse Jr"));
+      assert.ok(subs.some((s) => s.volunteerName === `${V1} Jr`));
     });
   });
 
@@ -203,17 +210,17 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       const vols = (await api.get("/api/volunteers", auth)).body;
-      const aaron = vols.find((v) => v.name === "Aaron Tse");
+      const aaron = vols.find((v) => v.name === V1);
       await api.send(
         "POST",
         `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse"] },
+        { volunteerNames: [V1] },
         auth
       );
       const del = await api.send("DELETE", `/api/volunteers/${aaron.id}`, undefined, auth);
       assert.equal(del.status, 200);
       const ev = (await api.get("/api/events", auth)).body[0]; // admin view keeps volunteerId
-      const row = ev.attendance.find((a) => a.volunteerName === "Aaron Tse");
+      const row = ev.attendance.find((a) => a.volunteerName === V1);
       assert.ok(row, "attendance row remains after volunteer deletion");
       assert.equal(row.volunteerId, null, "link is severed (SET NULL)");
     });
@@ -228,12 +235,12 @@ export function runSuite(withServer, label) {
       const added = await api.send(
         "POST",
         `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse"] },
+        { volunteerNames: [V1] },
         auth
       );
       assert.equal(added.status, 200);
       assert.equal(added.body.attendance.length, 1);
-      assert.equal(added.body.attendance[0].volunteerName, "Aaron Tse");
+      assert.equal(added.body.attendance[0].volunteerName, V1);
       // Pre-registering adds to the list but does NOT check them in.
       assert.equal(added.body.attendance[0].staffCheckin, false);
       assert.equal(added.body.attendance[0].volunteerCheckout, false);
@@ -246,17 +253,17 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
       assert.equal(
-        (await api.get("/api/submissions")).body.filter((s) => s.volunteerName === "Aaron Tse").length,
+        (await api.get("/api/submissions")).body.filter((s) => s.volunteerName === V1).length,
         1,
         "hours logged from check-in/out"
       );
       await api.send("DELETE", `/api/events/${event.id}`, undefined, auth);
       assert.equal(
-        (await api.get("/api/submissions")).body.filter((s) => s.volunteerName === "Aaron Tse").length,
+        (await api.get("/api/submissions")).body.filter((s) => s.volunteerName === V1).length,
         0,
         "deleting the event removed its submissions — nothing left to show as pending"
       );
@@ -270,12 +277,12 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const code = await codeFor(api, auth, "Aaron Tse");
+      const code = await codeFor(api, auth, V1);
 
       const first = await api.send("POST", `/api/events/${event.id}/checkin`, { code }, auth);
       assert.equal(first.status, 200);
       assert.equal(first.body.ok, true);
-      assert.equal(first.body.volunteer.name, "Aaron Tse");
+      assert.equal(first.body.volunteer.name, V1);
       assert.equal(first.body.attendance.staffCheckin, true);
       assert.equal(first.body.attendance.code, code, "scan response carries the volunteer code");
       assert.ok(first.body.attendance.checkinAt, "check-in time is stamped");
@@ -290,7 +297,7 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const code = await codeFor(api, auth, "Aaron Tse");
+      const code = await codeFor(api, auth, V1);
       const out = await api.send("POST", `/api/events/${event.id}/checkout`, { code }, auth);
       assert.equal(out.status, 200);
       assert.equal(out.body.attendance.volunteerCheckout, true);
@@ -302,11 +309,11 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const code = await codeFor(api, auth, "Amber Wang");
+      const code = await codeFor(api, auth, V2);
       await api.send("POST", `/api/events/${event.id}/checkin`, { code }, auth);
       await api.send("POST", `/api/events/${event.id}/checkout`, { code }, auth);
       const ev = (await api.get("/api/events", auth)).body[0]; // admin view keeps timestamps
-      const row = ev.attendance.find((a) => a.volunteerName === "Amber Wang");
+      const row = ev.attendance.find((a) => a.volunteerName === V2);
       assert.equal(row.staffCheckin, true);
       assert.equal(row.volunteerCheckout, true);
       assert.ok(row.checkinAt && row.checkoutAt);
@@ -328,7 +335,7 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const code = await codeFor(api, auth, "Aaron Tse");
+      const code = await codeFor(api, auth, V1);
       assert.equal(
         (await api.send("POST", `/api/events/${event.id}/checkin`, { code })).status,
         401
@@ -349,16 +356,16 @@ export function runSuite(withServer, label) {
       await api.send(
         "POST",
         `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse"] },
+        { volunteerNames: [V1] },
         auth
       );
       await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", staffCheckin: false,
+        volunteerName: V1, staffCheckin: false,
       }, auth);
       const on = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", staffCheckin: true,
+        volunteerName: V1, staffCheckin: true,
       }, auth);
-      const row = on.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
+      const row = on.body.attendance.find((a) => a.volunteerName === V1);
       assert.equal(row.staffCheckin, true);
       assert.ok(row.checkinAt, "auto-stamped when enabled without an existing time");
     });
@@ -371,14 +378,14 @@ export function runSuite(withServer, label) {
       await api.send(
         "POST",
         `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse"] },
+        { volunteerNames: [V1] },
         auth
       );
       const iso = "2026-03-15T17:30:00.000Z";
       const r = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", staffCheckin: true, checkinAt: iso,
+        volunteerName: V1, staffCheckin: true, checkinAt: iso,
       }, auth);
-      const row = r.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
+      const row = r.body.attendance.find((a) => a.volunteerName === V1);
       assert.equal(row.checkinAt, iso);
     });
   });
@@ -390,15 +397,15 @@ export function runSuite(withServer, label) {
       await api.send(
         "POST",
         `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse", "Amber Wang"] },
+        { volunteerNames: [V1, V2] },
         auth
       );
       const r = await api.send("DELETE", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse",
+        volunteerName: V1,
       }, auth);
       assert.equal(r.status, 200);
       assert.equal(r.body.attendance.length, 1);
-      assert.equal(r.body.attendance[0].volunteerName, "Amber Wang");
+      assert.equal(r.body.attendance[0].volunteerName, V2);
     });
   });
 
@@ -411,17 +418,17 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       // Give Aaron a grade so we can assert the derived submission picks it up.
-      const aaron = (await api.get("/api/volunteers", auth)).body.find((v) => v.name === "Aaron Tse");
+      const aaron = (await api.get("/api/volunteers", auth)).body.find((v) => v.name === V1);
       await api.send("PATCH", `/api/volunteers/${aaron.id}`, { grade: "11th" }, auth);
       // 16:00Z–19:00Z = 3.0 hours; local (America/Los_Angeles, PDT) = 09:00–12:00.
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
       // Read WITH admin auth — the public projection strips the exact
       // arrival/departure clock times (PII of minors).
       const subs = (await api.get("/api/submissions", auth)).body.filter(
-        (s) => s.volunteerName === "Aaron Tse"
+        (s) => s.volunteerName === V1
       );
       assert.equal(subs.length, 1, "one derived submission");
       assert.equal(subs[0].hours, 3, "hours = checkout − checkin");
@@ -437,11 +444,11 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
       const pub = (await api.get("/api/submissions")).body.find(
-        (s) => s.volunteerName === "Aaron Tse"
+        (s) => s.volunteerName === V1
       );
       assert.ok(pub, "public still lists the record (name/grade/hours)");
       assert.equal(pub.hours, 3, "public sees the hour total");
@@ -451,7 +458,7 @@ export function runSuite(withServer, label) {
       assert.equal(pub.submittedAt, undefined, "public must not see the internal submit timestamp");
 
       const adm = (await api.get("/api/submissions", auth)).body.find(
-        (s) => s.volunteerName === "Aaron Tse"
+        (s) => s.volunteerName === V1
       );
       assert.equal(adm.arrivalTime, "09:00", "admin sees the sign-in time");
       assert.equal(adm.endTime, "12:00", "admin sees the sign-out time");
@@ -463,13 +470,13 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
       assert.equal((await api.get("/api/submissions")).body.length, 1);
       // Clear checkout — no longer complete, so the derived submission goes away.
       await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", checkoutAt: null,
+        volunteerName: V1, checkoutAt: null,
       }, auth);
       assert.equal(
         (await api.get("/api/submissions")).body.length,
@@ -484,11 +491,11 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
       assert.equal((await api.get("/api/submissions")).body.length, 1);
-      await api.send("DELETE", `/api/events/${event.id}/attendance`, { volunteerName: "Aaron Tse" }, auth);
+      await api.send("DELETE", `/api/events/${event.id}/attendance`, { volunteerName: V1 }, auth);
       assert.equal(
         (await api.get("/api/submissions")).body.length,
         0,
@@ -504,11 +511,11 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T16:05:00.000Z" // 5 min -> rounds to 0
       );
       const subs = (await api.get("/api/submissions")).body.filter(
-        (s) => s.volunteerName === "Aaron Tse"
+        (s) => s.volunteerName === V1
       );
       assert.equal(subs.length, 1, "the completed visit is still recorded");
       assert.equal(subs[0].hours, 0, "rounded to zero hours, but present");
@@ -520,13 +527,13 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
       assert.equal((await api.get("/api/submissions")).body.length, 1);
       // Move check-in to AFTER the existing check-out -> no longer complete.
       await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", checkinAt: "2026-03-15T20:00:00.000Z",
+        volunteerName: V1, checkinAt: "2026-03-15T20:00:00.000Z",
       }, auth);
       assert.equal(
         (await api.get("/api/submissions")).body.length,
@@ -541,20 +548,20 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z" // 3h
       );
       let subs = (await api.get("/api/submissions")).body.filter(
-        (s) => s.volunteerName === "Aaron Tse"
+        (s) => s.volunteerName === V1
       );
       assert.equal(subs.length, 1);
       assert.equal(subs[0].hours, 3);
       // Shorten the visit to 1 hour — same row, recomputed hours.
       await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", checkoutAt: "2026-03-15T17:00:00.000Z",
+        volunteerName: V1, checkoutAt: "2026-03-15T17:00:00.000Z",
       }, auth);
       subs = (await api.get("/api/submissions")).body.filter(
-        (s) => s.volunteerName === "Aaron Tse"
+        (s) => s.volunteerName === V1
       );
       assert.equal(subs.length, 1, "still exactly one submission for the pair");
       assert.equal(subs[0].hours, 1, "hours recomputed in place");
@@ -603,7 +610,7 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
       assert.equal((await api.get("/api/events", auth)).body.length, 1);
@@ -643,7 +650,7 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
 
@@ -663,7 +670,7 @@ export function runSuite(withServer, label) {
       const imp = await api.send("POST", "/api/admin/import", dupBackup, auth);
       assert.equal(imp.status, 200);
       const after = (await api.get("/api/submissions")).body.filter(
-        (s) => s.eventId === event.id && s.volunteerName === "Aaron Tse"
+        (s) => s.eventId === event.id && s.volunteerName === V1
       );
       assert.equal(after.length, 1, "duplicate collapsed to one");
       assert.notEqual(after[0].hours, 999, "kept the newer row, not the stale dup");
@@ -704,7 +711,7 @@ export function runSuite(withServer, label) {
       assert.equal(imp.status, 200);
       assert.equal(imp.body.counts.volunteers, before.length);
       const after = (await api.get("/api/volunteers", auth)).body;
-      assert.equal(after.find((v) => v.name === "Aaron Tse").code, "TCYA-0001");
+      assert.equal(after.find((v) => v.name === V1).code, "TCYA-0001");
       // Next created volunteer must get max+1 with no collision.
       const created = await api.send("POST", "/api/volunteers", { name: "Post Restore" }, auth);
       assert.equal(created.status, 201);
@@ -717,13 +724,13 @@ export function runSuite(withServer, label) {
   test(name("creating a volunteer with an existing name needs force"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
-      const dup = await api.send("POST", "/api/volunteers", { name: "Aaron Tse" }, auth);
+      const dup = await api.send("POST", "/api/volunteers", { name: V1 }, auth);
       assert.equal(dup.status, 409);
       assert.equal(dup.body.code, "duplicate_name");
       const forced = await api.send(
         "POST",
         "/api/volunteers",
-        { name: "Aaron Tse", force: true },
+        { name: V1, force: true },
         auth
       );
       assert.equal(forced.status, 201);
@@ -739,22 +746,22 @@ export function runSuite(withServer, label) {
       await api.send(
         "POST",
         `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse", "Amber Wang"] },
+        { volunteerNames: [V1, V2] },
         auth
       );
       const aaron = (await api.get("/api/volunteers", auth)).body.find(
-        (v) => v.name === "Aaron Tse"
+        (v) => v.name === V1
       );
       const r = await api.send(
         "PATCH",
         `/api/volunteers/${aaron.id}`,
-        { name: "Amber Wang" },
+        { name: V2 },
         auth
       );
       assert.equal(r.status, 409);
       const ev = (await api.get("/api/events")).body[0];
-      assert.ok(ev.attendance.some((a) => a.volunteerName === "Aaron Tse"));
-      assert.ok(ev.attendance.some((a) => a.volunteerName === "Amber Wang"));
+      assert.ok(ev.attendance.some((a) => a.volunteerName === V1));
+      assert.ok(ev.attendance.some((a) => a.volunteerName === V2));
     });
   });
 
@@ -767,11 +774,11 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: ["Aaron Tse"] }, auth);
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V1] }, auth);
       const r = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", checkoutAt: "2026-03-15T20:00:00.000Z",
+        volunteerName: V1, checkoutAt: "2026-03-15T20:00:00.000Z",
       }, auth);
-      const row = r.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
+      const row = r.body.attendance.find((a) => a.volunteerName === V1);
       assert.equal(row.volunteerCheckout, true);
       assert.equal(row.staffCheckin, false, "no bogus check-in");
       assert.equal(row.checkinAt, null, "no bogus check-in time");
@@ -783,13 +790,13 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const code = await codeFor(api, auth, "Aaron Tse");
+      const code = await codeFor(api, auth, V1);
       await api.send("POST", `/api/events/${event.id}/checkin`, { code }, auth); // real check-in
       const iso = "2026-03-15T20:00:00.000Z";
       const r = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", checkoutAt: iso,
+        volunteerName: V1, checkoutAt: iso,
       }, auth);
-      const row = r.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
+      const row = r.body.attendance.find((a) => a.volunteerName === V1);
       assert.equal(row.volunteerCheckout, true);
       assert.equal(row.checkoutAt, iso);
       assert.equal(row.staffCheckin, true, "the real check-in is preserved");
@@ -802,15 +809,15 @@ export function runSuite(withServer, label) {
       const event = await makeEvent(api, auth);
       // Log complete hours first.
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
       assert.equal((await api.get("/api/submissions")).body.length, 1);
       // Clear the check-in time.
       const r = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", checkinAt: null,
+        volunteerName: V1, checkinAt: null,
       }, auth);
-      const row = r.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
+      const row = r.body.attendance.find((a) => a.volunteerName === V1);
       assert.equal(row.checkinAt, null, "time cleared");
       assert.equal(row.staffCheckin, false, "flag follows the timestamp");
       assert.equal((await api.get("/api/submissions")).body.length, 0, "hours dropped");
@@ -822,13 +829,13 @@ export function runSuite(withServer, label) {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       await logHours(
-        api, auth, event.id, "Aaron Tse",
+        api, auth, event.id, V1,
         "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z"
       );
       const r = await api.send("PATCH", `/api/events/${event.id}/attendance`, {
-        volunteerName: "Aaron Tse", staffCheckin: false,
+        volunteerName: V1, staffCheckin: false,
       }, auth);
-      const row = r.body.attendance.find((a) => a.volunteerName === "Aaron Tse");
+      const row = r.body.attendance.find((a) => a.volunteerName === V1);
       assert.equal(row.staffCheckin, false);
       assert.equal(row.checkinAt, null, "toggling off clears the time");
       assert.equal((await api.get("/api/submissions")).body.length, 0);
@@ -844,12 +851,12 @@ export function runSuite(withServer, label) {
       const r = await api.send(
         "POST",
         `/api/events/${event.id}/attendance`,
-        { volunteerNames: ["Aaron Tse", "Aaron Tse"] },
+        { volunteerNames: [V1, V1] },
         auth
       );
       assert.equal(r.status, 200);
       assert.equal(
-        r.body.attendance.filter((a) => a.volunteerName === "Aaron Tse").length,
+        r.body.attendance.filter((a) => a.volunteerName === V1).length,
         1
       );
     });
@@ -860,7 +867,7 @@ export function runSuite(withServer, label) {
   test(name("malformed eventId on check-in returns 404, not 500"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
-      const code = await codeFor(api, auth, "Aaron Tse");
+      const code = await codeFor(api, auth, V1);
       const r = await api.send("POST", "/api/events/not-a-uuid/checkin", { code }, auth);
       assert.equal(r.status, 404);
     });
@@ -885,7 +892,7 @@ export function runSuite(withServer, label) {
   test(name("check-in on a nonexistent event returns 404 unknown_event mapping"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
-      const code = await codeFor(api, auth, "Aaron Tse");
+      const code = await codeFor(api, auth, V1);
       const r = await api.send(
         "POST",
         "/api/events/11111111-1111-1111-1111-111111111111/checkin",
@@ -900,7 +907,7 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const code = await codeFor(api, auth, "Aaron Tse");
+      const code = await codeFor(api, auth, V1);
       const first = await api.send("POST", `/api/events/${event.id}/checkin`, { code }, auth);
       assert.equal(first.body.alreadyDone, false);
       const second = await api.send("POST", `/api/events/${event.id}/checkin`, { code }, auth);
@@ -921,11 +928,11 @@ export function runSuite(withServer, label) {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
-      const code = await codeFor(api, auth, "Aaron Tse");
+      const code = await codeFor(api, auth, V1);
       await api.send("POST", `/api/events/${event.id}/checkin`, { code }, auth);
 
       const pub = (await api.get("/api/events")).body[0].attendance[0];
-      assert.equal(pub.volunteerName, "Aaron Tse");
+      assert.equal(pub.volunteerName, V1);
       assert.equal(typeof pub.staffCheckin, "boolean");
       assert.equal(pub.code, undefined, "public must not leak the QR code");
       assert.equal(pub.volunteerId, undefined, "public must not leak internal id");
@@ -933,7 +940,7 @@ export function runSuite(withServer, label) {
       assert.equal(JSON.stringify(pub).includes("TCYA-0001"), false);
 
       const adm = (await api.get("/api/events", auth)).body[0].attendance.find(
-        (a) => a.volunteerName === "Aaron Tse"
+        (a) => a.volunteerName === V1
       );
       assert.equal(adm.code, "TCYA-0001", "admin sees the code");
       assert.ok(adm.checkinAt, "admin sees the check-in time");

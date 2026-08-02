@@ -4,6 +4,7 @@ import {
   parseScannedCode,
   safeFileName,
   dataUrlToBlob,
+  formatDisplayId,
   QR_TYPE,
 } from "./qr";
 import type { Volunteer } from "./types";
@@ -74,6 +75,24 @@ describe("parseScannedCode", () => {
     expect(parseScannedCode("not json {")).toBeNull();
     expect(parseScannedCode("")).toBeNull();
     expect(parseScannedCode("HELLO-0001")).toBeNull();
+  });
+});
+
+describe("formatDisplayId", () => {
+  it("brands the code as ELA-TCYA-### with 3-digit padding", () => {
+    expect(formatDisplayId("TCYA-0001")).toBe("ELA-TCYA-001");
+    expect(formatDisplayId("TCYA-0048")).toBe("ELA-TCYA-048");
+    expect(formatDisplayId("TCYA-0123")).toBe("ELA-TCYA-123");
+  });
+
+  it("keeps extra digits past 999 (never truncates the number)", () => {
+    expect(formatDisplayId("TCYA-1000")).toBe("ELA-TCYA-1000");
+    expect(formatDisplayId("TCYA-12345")).toBe("ELA-TCYA-12345");
+  });
+
+  it("degrades gracefully on a code with no number", () => {
+    expect(formatDisplayId("")).toBe("");
+    expect(formatDisplayId("TCYA-")).toBe("TCYA-");
   });
 });
 

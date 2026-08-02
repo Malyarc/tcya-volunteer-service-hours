@@ -9,6 +9,17 @@ import type { Volunteer } from "./types";
 export const QR_TYPE = "TCYA-VOL";
 export const CODE_RE = /^TCYA-\d{4,}$/i;
 
+// The chapter's branded, human-facing ID shown on ID cards, the QR modal, and
+// the admin roster: "ELA-TCYA-001" (East LA prefix, 3-digit). It is DERIVED from
+// the internal code ("TCYA-0001") for display only — the stored code and the QR
+// payload keep the canonical "TCYA-####" form, so scanning/identity are
+// unchanged. Numbers past 999 keep their extra digits (never truncated).
+export function formatDisplayId(code: string): string {
+  const m = /(\d+)\s*$/.exec(code || "");
+  if (!m) return code || "";
+  return `ELA-TCYA-${String(parseInt(m[1], 10)).padStart(3, "0")}`;
+}
+
 export interface QrPayload {
   t: typeof QR_TYPE;
   v: 1;

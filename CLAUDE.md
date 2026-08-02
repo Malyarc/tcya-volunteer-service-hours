@@ -23,8 +23,14 @@ Postgres** database.
 - `server/src/routes.js` is the shared Express router (used by both entry points:
   `server/src/index.js` for EC2 and `netlify/functions/api/api.mjs` for Netlify).
 - Frontend: `client/` (Vite + React + Tailwind). QR generation in `client/src/qr.ts`
-  (payload) + `volunteerExports.ts` (bulk PDF/Excel). Scanner in
+  (payload + `formatDisplayId`). The ID **card** is drawn by one canvas renderer,
+  `client/src/cardRenderer.ts`, which feeds the modal preview, PNG/copy, and the
+  single + bulk PDFs (`volunteerExports.ts`) — WYSIWYG. Scanner in
   `client/src/components/admin/ScannerModal.tsx`.
+- **Display ID vs canonical code:** the human-facing ID is the branded
+  `ELA-TCYA-001` form (`formatDisplayId(code)`), shown on the card, QR modal, admin
+  roster, and Excel export. The stored `code` and the QR payload keep the canonical
+  `TCYA-0001` form — never derive identity from the display string.
 
 ## Critical invariants (do not break)
 
@@ -65,6 +71,8 @@ npm run build --prefix client   # tsc -b && vite build
 ```
 
 - `server/test/suite.js` — the shared behavioral suite (run against both stores).
+  Fixture names are derived from `SEED_VOLUNTEERS` (`V1`/`V2`), so editing the
+  roster never breaks it.
 - `server/test/hours.test.js` — pure unit tests for the hours-derivation helpers
   (0.25h rounding, `isComplete` decoupling, `localHHMM` timezone/DST edge cases).
 - `server/test/routes.test.js` — runs the suite on the in-memory store + a
@@ -91,10 +99,14 @@ bar but breaks prod).
 
 ## Durability — NEVER wipe production
 
-**Production is the single source of truth and is never "reset to pristine."** Do
-NOT run the parity suite, `npm run reset`, `POST /api/admin/reset`, or a
-replace-all `POST /api/admin/import` against the prod database. (Real data was lost
-once this way.) Safeguards now in place:
+**As of 2026-08-01 prod holds REAL data** (48 volunteers, 745.25 hrs, 13 historical
++ 1 future event) — the one-time dummy→real go-live import is DONE. From here it is
+the single source of truth, updated ONLY via the admin UI or a careful assisted
+change. **Production is never "reset to pristine."** Do NOT run the parity suite,
+`npm run reset`, `POST /api/admin/reset`, or a replace-all `POST /api/admin/import`
+against the prod database. (Real data was lost once this way.) The `client/`-side
+`seed-volunteers.js` reflects the real roster but only seeds a FRESH/empty DB — it
+never touches prod (the table is non-empty). Safeguards now in place:
 
 - **Fail-closed store** (`create-store.js`): in a prod-like env
   (`NETLIFY`/`AWS_LAMBDA_FUNCTION_NAME`/`NODE_ENV=production`) with no DB URL it

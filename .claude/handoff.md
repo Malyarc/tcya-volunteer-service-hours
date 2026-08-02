@@ -1,8 +1,59 @@
 # Handoff — ELA TCYA Volunteer Service Hours
 
-Single source of truth for the project's current state. Last updated: 2026-07-10.
+Single source of truth for the project's current state. Last updated: 2026-08-01.
 
-## Round 4 (latest) — data durability: never lose data again
+## Round 5 (latest) — GO LIVE: real roster + hours, new ID-card design
+
+**Production now holds REAL data** (was dummy/seed before). Both tasks shipped +
+verified live on https://tcyavolunteers.netlify.app.
+
+### 1. Data go-live (imported from the chapter's Hours spreadsheet)
+
+- **48 volunteers**, codes `TCYA-0001..0048` in ALPHABETICAL order. New students
+  added later just increment (next `TCYA-0049`) and never renumber existing IDs;
+  the roster still displays alphabetically (this is how the code sequence +
+  name-sorted list already work).
+- **13 reconstructed historical events** (Apr–Jul 2026) + the **1 pre-existing
+  future event** ("Welcome Kick-off/Orientation", 2026-08-16) which was PRESERVED
+  through the import.
+- **195 attendance rows + 195 derived submissions**; grand total **745.25 hrs**.
+  Hours were reconstructed as COMPLETE attendance rows (checkin = real sign-in,
+  checkout = checkin + credited hours) so the app's derive-from-timestamps model
+  produces exactly the sheet's numbers. Food Distribution = flat 5.00/event.
+- **Verified live**: replayed the client's own `buildSummaries`/`isCountableSubmission`
+  against the live public API → 745.25 exact; per-student + per-event totals all
+  reconcile against the sheet's Student/Event Totals tabs. A pre-import backup of
+  the old dummy state was taken (session scratch).
+- `server/src/data/seed-volunteers.js` was regenerated to the real 48 names so a
+  FRESH DB seeds the same roster (grades/hours live in the DB, not the seed).
+
+### 2. New QR ID-card design (the chapter's own design)
+
+- New card = light-blue header band (lotus logo + "Tzu Chi Youth Association US" /
+  "East LA 東洛慈少"), big bold name, QR, and a branded **ELA-TCYA-###** ID under it.
+  Contact details are intentionally NOT on the card (data minimization); the QR
+  still encodes only `{t,v,id,code,name}`.
+- One canvas renderer (`client/src/cardRenderer.ts`) feeds the modal preview, the
+  PNG download, clipboard copy, and the single + bulk PDFs — WYSIWYG.
+- **Display ID `ELA-TCYA-001` is shown everywhere** (card, QR modal, admin roster,
+  Excel export) via `formatDisplayId()`; the stored `code` + QR payload stay the
+  canonical `TCYA-0001`, so scanning/identity are unchanged.
+- Verified in the running app: cards render correctly; every name (longest fits at
+  60px) clears the QR; display IDs show on the roster; no console errors.
+
+### Durability posture (operator: the data is real now — protect it)
+
+- The single-replace go-live import is DONE. Do NOT run another replace-all import,
+  `/admin/reset`, `npm run reset`, or the parity suite against prod. Updates happen
+  only via the admin UI (add/edit volunteers, scan/edit attendance → hours derive)
+  or a careful assisted change.
+- **TOP ACTION — set a strong `ADMIN_PASSWORD`** (+ `SESSION_SECRET`) in Netlify env.
+  It is still the default `1013`; anyone who knows it has full edit/wipe power over
+  the now-real data. This is the #1 data-loss/security vector.
+- **Enable Neon PITR / automated backups** on the primary branch as an
+  app-independent safety net.
+
+## Round 4 — data durability: never lose data again
 
 **Root cause of "events don't persist":** NOT an app bug. The app stores events
 durably in Neon (verified by reading Neon directly + confirming an event survived
