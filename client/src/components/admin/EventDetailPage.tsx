@@ -37,9 +37,21 @@ export function EventDetailPage({
   const [pickerQuery, setPickerQuery] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  // Per-row pending state so toggling ONE attendee doesn't grey out every other
+  // row's controls (a single shared `busy` froze the whole list mid-update).
+  const [pendingRows, setPendingRows] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [editingRow, setEditingRow] = useState<string | null>(null);
+
+  function setRowPending(name: string, on: boolean) {
+    setPendingRows((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+  }
 
   const attendees = useMemo(() => {
     const { staff, selfAdded } = sortAttendance(event);
@@ -116,7 +128,7 @@ export function EventDetailPage({
       }
     }
     try {
-      setBusy(true);
+      setRowPending(volunteerName, true);
       setError(null);
       const updated = await patchAttendee(event.id, volunteerName, {
         [field]: next,
@@ -125,7 +137,7 @@ export function EventDetailPage({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update.");
     } finally {
-      setBusy(false);
+      setRowPending(volunteerName, false);
     }
   }
 
@@ -139,7 +151,7 @@ export function EventDetailPage({
       return;
     }
     try {
-      setBusy(true);
+      setRowPending(volunteerName, true);
       setError(null);
       const updated = await patchAttendee(event.id, volunteerName, patch);
       onEventUpdated(updated);
@@ -147,21 +159,21 @@ export function EventDetailPage({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save times.");
     } finally {
-      setBusy(false);
+      setRowPending(volunteerName, false);
     }
   }
 
   async function handleRemove(volunteerName: string) {
     if (!window.confirm(`Remove ${volunteerName} from this event?`)) return;
     try {
-      setBusy(true);
+      setRowPending(volunteerName, true);
       setError(null);
       const updated = await removeAttendee(event.id, volunteerName);
       onEventUpdated(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove.");
     } finally {
-      setBusy(false);
+      setRowPending(volunteerName, false);
     }
   }
 
@@ -282,6 +294,7 @@ export function EventDetailPage({
               </svg>
               <input
                 type="text"
+                aria-label="Search volunteers to add"
                 placeholder="Search volunteers…"
                 value={pickerQuery}
                 onChange={(e) => setPickerQuery(e.target.value)}
@@ -380,7 +393,7 @@ export function EventDetailPage({
                   <AttendanceRow
                     key={a.volunteerName}
                     entry={a}
-                    busy={busy}
+                    busy={busy || pendingRows.has(a.volunteerName)}
                     editing={editingRow === a.volunteerName}
                     onToggle={handleToggleCheck}
                     onRemove={handleRemove}
@@ -471,7 +484,7 @@ function AttendanceRow({
         <td className="px-4 py-2.5">
           <div className="font-medium text-slate-900">{entry.volunteerName}</div>
           {entry.code && (
-            <div className="text-[11px] font-medium text-slate-400">{formatDisplayId(entry.code)}</div>
+            <div className="text-[11px] font-medium text-slate-500">{formatDisplayId(entry.code)}</div>
           )}
         </td>
         <td className="px-4 py-2.5 text-center">
@@ -497,11 +510,11 @@ function AttendanceRow({
           )}
         </td>
         <td className="px-2 py-2.5 text-right">
-          <div className="inline-flex items-center gap-0.5">
+          <div className="inline-flex items-center gap-1.5">
             <button
               onClick={startEdit}
               disabled={busy}
-              className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              className="rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
               aria-label={`Edit times for ${entry.volunteerName}`}
               title="Edit check-in / out times"
             >
@@ -513,7 +526,7 @@ function AttendanceRow({
             <button
               onClick={() => onRemove(entry.volunteerName)}
               disabled={busy}
-              className="rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600"
+              className="rounded-md p-2 text-slate-400 hover:bg-red-50 hover:text-red-600"
               aria-label={`Remove ${entry.volunteerName}`}
               title="Remove from event"
             >
@@ -562,7 +575,7 @@ function AttendanceRow({
             {timeError && (
               <p className="mt-2 text-[11px] font-medium text-red-600">{timeError}</p>
             )}
-            <p className="mt-2 text-[11px] text-slate-400">
+            <p className="mt-2 text-[11px] text-slate-500">
               Setting a time marks that side checked; hours = check-out − check-in.
               Clear a field to remove its time.
             </p>
@@ -590,7 +603,7 @@ function CheckToggle({
       onClick={onClick}
       disabled={disabled}
       aria-label={ariaLabel}
-      className={`inline-flex h-8 w-8 items-center justify-center rounded-full border transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+      className={`inline-flex h-9 w-9 items-center justify-center rounded-full border transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${
         checked
           ? "border-transparent bg-emerald-500 text-white shadow focus:ring-emerald-500 hover:bg-emerald-600"
           : "border-slate-300 bg-white text-slate-400 hover:border-slate-400 hover:text-slate-600 focus:ring-slate-400"

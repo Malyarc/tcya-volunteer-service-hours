@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { EVENT_NAMES, OTHER_EVENT } from "../../data/events";
 import { createEvent } from "../../api";
 import type { VolunteerEvent } from "../../types";
 import { todayYmd } from "../../utils";
+import { useFocusTrap } from "../../useFocusTrap";
 
 interface Props {
   open: boolean;
@@ -16,6 +17,8 @@ export function CreateEventModal({ open, onClose, onCreated }: Props) {
   const [date, setDate] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, open);
 
   useEffect(() => {
     if (open) {
@@ -69,6 +72,7 @@ export function CreateEventModal({ open, onClose, onCreated }: Props) {
         aria-hidden
       />
       <div
+        ref={dialogRef}
         className="relative z-10 w-full max-w-xl overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl"
         role="dialog"
         aria-modal="true"
@@ -112,6 +116,7 @@ export function CreateEventModal({ open, onClose, onCreated }: Props) {
               <select
                 id="new-event-name"
                 className="input"
+                autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
               >

@@ -75,6 +75,7 @@ export function VolunteerTable({ summaries, isAdmin = false }: Props) {
             </svg>
             <input
               type="text"
+              aria-label="Search volunteers by name or grade"
               placeholder="Search name or grade…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -113,7 +114,11 @@ export function VolunteerTable({ summaries, isAdmin = false }: Props) {
                   colSpan={6}
                   className="px-5 py-10 text-center text-sm text-slate-500"
                 >
-                  No volunteers match your search.
+                  {summaries.length === 0
+                    ? "No volunteers in the roster yet."
+                    : hideEmpty && !query.trim()
+                      ? "No volunteers have logged hours yet."
+                      : "No volunteers match your search."}
                 </td>
               </tr>
             )}

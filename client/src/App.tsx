@@ -43,6 +43,10 @@ export default function App() {
   const [events, setEvents] = useState<VolunteerEvent[]>([]);
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
+  // Whether the FIRST admin volunteers fetch has completed. Prevents the
+  // Volunteers panel from flashing "No volunteers yet" (looks wiped) before the
+  // roster has loaded, since volunteers load a round-trip after the public data.
+  const [volunteersLoaded, setVolunteersLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -92,6 +96,8 @@ export default function App() {
       setVolunteers(await fetchVolunteers());
     } catch {
       // non-fatal
+    } finally {
+      setVolunteersLoaded(true);
     }
   }, []);
 
@@ -102,6 +108,7 @@ export default function App() {
   useEffect(() => {
     if (!isAdmin) {
       setVolunteers([]);
+      setVolunteersLoaded(false);
       return;
     }
     let cancelled = false;
@@ -300,6 +307,7 @@ export default function App() {
               {isAdmin && adminTab === "volunteers" && (
                 <VolunteersPanel
                   volunteers={volunteers}
+                  loading={!volunteersLoaded}
                   onChanged={handleVolunteersChanged}
                   onToast={setToast}
                 />

@@ -99,6 +99,9 @@ export function PasscodeGate({ onUnlock }: Props) {
       <div className="absolute inset-0 bg-brand-900/30" aria-hidden />
 
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="passcode-title"
         className={`relative w-full max-w-sm overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-black/5 transition-transform ${
           shaking ? "animate-[shake_0.45s_ease-in-out]" : ""
         }`}
@@ -124,7 +127,7 @@ export function PasscodeGate({ onUnlock }: Props) {
         </div>
 
         <div className="px-6 py-6">
-          <h2 className="text-base font-semibold text-slate-900">
+          <h2 id="passcode-title" className="text-base font-semibold text-slate-900">
             Enter passcode
           </h2>
           <p className="mt-1 text-sm text-slate-500">
@@ -163,7 +166,7 @@ export function PasscodeGate({ onUnlock }: Props) {
             </div>
           )}
 
-          <p className="mt-5 text-center text-xs text-slate-400">
+          <p className="mt-5 text-center text-xs text-slate-500">
             Stays unlocked until you close this tab.
           </p>
         </div>

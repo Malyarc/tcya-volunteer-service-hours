@@ -12,13 +12,16 @@ import { Avatar } from "../Avatar";
 
 interface Props {
   volunteers: Volunteer[];
+  // True until the first volunteers fetch resolves, so we don't flash the
+  // "No volunteers yet" empty state (which reads as "the roster got wiped").
+  loading?: boolean;
   // Called after any create/update/delete so the parent can re-fetch the
   // authoritative roster + volunteer list (keeps renames/cascades consistent).
   onChanged: () => void;
   onToast: (msg: string) => void;
 }
 
-export function VolunteersPanel({ volunteers, onChanged, onToast }: Props) {
+export function VolunteersPanel({ volunteers, loading = false, onChanged, onToast }: Props) {
   const [query, setQuery] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Volunteer | null>(null);
@@ -128,6 +131,7 @@ export function VolunteersPanel({ volunteers, onChanged, onToast }: Props) {
           </svg>
           <input
             type="text"
+            aria-label="Search volunteers by name, ID, email, or phone"
             placeholder="Search name, code, email, phone…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -157,9 +161,11 @@ export function VolunteersPanel({ volunteers, onChanged, onToast }: Props) {
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={5} className="px-5 py-10 text-center text-sm text-slate-500">
-                  {volunteers.length === 0
-                    ? "No volunteers yet — click Add Volunteer to create one."
-                    : "No volunteers match your search."}
+                  {loading && volunteers.length === 0
+                    ? "Loading volunteers…"
+                    : volunteers.length === 0
+                      ? "No volunteers yet — click Add Volunteer to create one."
+                      : "No volunteers match your search."}
                 </td>
               </tr>
             )}
@@ -268,7 +274,7 @@ function IconBtn({
       onClick={onClick}
       aria-label={label}
       title={title}
-      className={`rounded-md p-1.5 text-slate-400 transition ${
+      className={`rounded-md p-2 text-slate-400 transition ${
         danger ? "hover:bg-red-50 hover:text-red-600" : "hover:bg-slate-100 hover:text-slate-700"
       }`}
     >

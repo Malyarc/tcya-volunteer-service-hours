@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { adminLogin } from "../api";
 import { setAdminToken } from "../auth";
+import { useFocusTrap } from "../useFocusTrap";
 
 interface Props {
   open: boolean;
@@ -14,6 +15,8 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, open);
 
   useEffect(() => {
     if (open) {
@@ -66,6 +69,7 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
         aria-hidden
       />
       <div
+        ref={dialogRef}
         className="relative w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl"
         role="dialog"
         aria-modal="true"
@@ -132,7 +136,6 @@ export function AdminLoginModal({ open, onClose, onLoggedIn }: Props) {
               onClick={() => setShowPassword((s) => !s)}
               className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
               aria-label={showPassword ? "Hide password" : "Show password"}
-              tabIndex={-1}
             >
               {showPassword ? (
                 <svg

@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Volunteer } from "../../types";
 import { GRADES } from "../../data/events";
 import { createVolunteer, updateVolunteer } from "../../api";
 import { formatDisplayId } from "../../qr";
+import { useFocusTrap } from "../../useFocusTrap";
 
 interface Props {
   open: boolean;
@@ -24,6 +25,8 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
   const [fields, setFields] = useState<FieldRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, open);
 
   useEffect(() => {
     if (!open) return;
@@ -96,14 +99,22 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
         onSaved(saved, true);
       } catch (err) {
         // Duplicate name — offer to add anyway (names key attendance/hours).
-        if (
-          (err as { code?: string })?.code === "duplicate_name" &&
-          window.confirm(
-            `${(err as Error).message}\n\nAdding a second volunteer with the same name can cause their attendance and hours to be mixed up. Add anyway?`
-          )
-        ) {
-          const saved = await createVolunteer(payload, true);
-          onSaved(saved, true);
+        if ((err as { code?: string })?.code === "duplicate_name") {
+          // The server message carries the raw code + its own "Add anyway?"; we
+          // build our own single, branded prompt instead of echoing it.
+          const existingCode = /TCYA-\d{4,}/i.exec((err as Error).message || "")?.[0];
+          const idLabel = existingCode ? ` (${formatDisplayId(existingCode)})` : "";
+          const proceed = window.confirm(
+            `A volunteer named "${payload.name}"${idLabel} already exists.\n\n` +
+              `Adding a second volunteer with the same name can mix up their attendance and hours. Add anyway?`
+          );
+          if (proceed) {
+            const saved = await createVolunteer(payload, true);
+            onSaved(saved, true);
+          } else {
+            // Declined — show a plain statement, not the raw dangling question.
+            setError(`Not added — a volunteer named "${payload.name}" already exists.`);
+          }
         } else {
           throw err;
         }
@@ -123,6 +134,7 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
         aria-hidden
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={volunteer ? "Edit volunteer" : "Add volunteer"}
@@ -183,13 +195,13 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
                 + Add field
               </button>
             </div>
-            <p className="mb-2 text-xs text-slate-400">
-              Anything extra for the ID card — T-shirt size, guardian, allergies…
-              Saved with the volunteer and printed on the ID card (never inside the
-              scannable QR code).
+            <p className="mb-2 text-xs text-slate-500">
+              Anything extra to keep on file — T-shirt size, guardian, allergies…
+              Saved with the volunteer and included in the roster export (never on
+              the ID card or inside the scannable QR code).
             </p>
             {fields.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-slate-200 px-3 py-3 text-center text-xs text-slate-400">
+              <div className="rounded-lg border border-dashed border-slate-200 px-3 py-3 text-center text-xs text-slate-500">
                 No custom fields yet.
               </div>
             ) : (
@@ -199,6 +211,7 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
                     <input
                       type="text"
                       className="input flex-1"
+                      aria-label="Custom field name"
                       placeholder="Field name"
                       value={f.key}
                       onChange={(e) => updateField(i, { key: e.target.value })}
@@ -206,6 +219,7 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
                     <input
                       type="text"
                       className="input flex-1"
+                      aria-label="Custom field value"
                       placeholder="Value"
                       value={f.value}
                       onChange={(e) => updateField(i, { value: e.target.value })}

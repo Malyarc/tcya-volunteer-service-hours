@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Volunteer } from "../../types";
 import { dataUrlToBlob, formatDisplayId } from "../../qr";
 import { renderCardPng } from "../../cardRenderer";
 import { downloadIdCardPng, downloadIdCardPdf } from "../../volunteerExports";
+import { useFocusTrap } from "../../useFocusTrap";
 
 interface Props {
   volunteer: Volunteer | null;
@@ -17,6 +18,8 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
   const [cardUrl, setCardUrl] = useState<string>("");
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, !!volunteer);
 
   useEffect(() => {
     if (!volunteer) return;
@@ -104,12 +107,13 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
         aria-hidden
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={`QR ID card for ${v.name}`}
-        className="relative z-10 w-full max-w-lg overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl"
+        className="relative z-10 flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl sm:rounded-2xl"
       >
-        <div className="flex items-start justify-between border-b border-slate-100 px-6 py-4">
+        <div className="flex flex-none items-start justify-between border-b border-slate-100 px-6 py-4">
           <div>
             <h2 className="text-lg font-semibold text-slate-900">
               Volunteer QR ID Card
@@ -130,7 +134,7 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
           </button>
         </div>
 
-        <div className="px-6 py-5">
+        <div className="overflow-y-auto px-6 py-5">
           {/* ID card — rendered exactly as it downloads / prints */}
           <div className="mx-auto max-w-md overflow-hidden rounded-xl border border-slate-200 shadow-sm">
             {cardUrl ? (
@@ -175,7 +179,7 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
               title={v.email ? `Email ${v.email}` : "No email on file — add one to email this"}
             />
           </div>
-          <p className="mt-3 text-center text-[11px] text-slate-400">
+          <p className="mt-3 text-center text-[11px] text-slate-500">
             The QR encodes only {v.name.split(" ")[0]}'s name and unique ID ({displayId}) —
             staff scan it to check in / out. Contact details are never on the card
             or inside the code.

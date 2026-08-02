@@ -49,7 +49,7 @@ export function AdminTabs({ active, onChange, volunteerCount, eventCount }: Prop
   ];
 
   return (
-    <div className="sticky top-0 z-30 -mx-4 border-b border-slate-200 bg-white/90 px-4 backdrop-blur sm:-mx-6 sm:px-6">
+    <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 px-4 backdrop-blur sm:px-6">
       <div className="mx-auto flex max-w-6xl gap-1 py-2" role="tablist" aria-label="Admin sections">
         {tabs.map((t) => {
           const on = active === t.key;

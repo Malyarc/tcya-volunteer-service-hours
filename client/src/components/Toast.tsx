@@ -14,7 +14,11 @@ export function Toast({ message, onDismiss }: Props) {
 
   if (!message) return null;
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center">
+    <div
+      role="status"
+      aria-live="polite"
+      className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center"
+    >
       <div className="pointer-events-auto flex items-center gap-3 rounded-full bg-slate-900/90 px-5 py-2.5 text-sm font-medium text-white shadow-xl ring-1 ring-white/10 backdrop-blur">
         <svg
           viewBox="0 0 24 24"

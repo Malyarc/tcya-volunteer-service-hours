@@ -3,6 +3,7 @@ import type { Volunteer, VolunteerEvent } from "../../types";
 import { checkInByCode, checkOutByCode } from "../../api";
 import { parseScannedCode, formatDisplayId } from "../../qr";
 import { formatClockFromIso, getEventDisplayName } from "../../utils";
+import { useFocusTrap } from "../../useFocusTrap";
 
 type Mode = "in" | "out";
 type Feedback = { kind: "ok" | "warn" | "error"; text: string; at: number } | null;
@@ -36,6 +37,8 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
   const [manualPick, setManualPick] = useState("");
   const [processing, setProcessing] = useState(false);
   const scanIdRef = useRef(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, open);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -310,6 +313,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
   function submitPick() {
     const v = volunteers.find((x) => x.id === manualPick);
     if (!v) return;
+    setManualPick(""); // reset so the same person isn't accidentally re-submitted
     processCode(v.code, "manual");
   }
 
@@ -324,6 +328,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
       <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={onClose} aria-hidden />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Scan volunteer QR codes"
@@ -405,6 +410,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
             <form onSubmit={submitManual} className="flex gap-2">
               <input
                 type="text"
+                aria-label="Volunteer ID for manual check-in"
                 value={manualCode}
                 onChange={(e) => setManualCode(e.target.value)}
                 placeholder="Enter ID e.g. ELA-TCYA-001"
@@ -415,7 +421,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
               </button>
             </form>
             <div className="mt-2 flex gap-2">
-              <select className="input" value={manualPick} onChange={(e) => setManualPick(e.target.value)}>
+              <select className="input" aria-label="Pick a volunteer to check in" value={manualPick} onChange={(e) => setManualPick(e.target.value)}>
                 <option value="">Or pick a volunteer…</option>
                 {[...volunteers]
                   .sort((a, b) => a.name.localeCompare(b.name))
@@ -445,7 +451,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
                       r.status === "ok" ? "bg-emerald-50 text-emerald-900" : "bg-red-50 text-red-800"
                     }`}
                   >
-                    <span className="truncate">
+                    <span className="min-w-0 truncate">
                       {r.status === "ok" ? (
                         <>
                           <span className="font-medium">{r.name}</span>{" "}
@@ -457,7 +463,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
                         <span className="text-xs">{r.name}</span>
                       )}
                     </span>
-                    <span className={`badge ${r.mode === "in" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+                    <span className={`badge flex-none ${r.mode === "in" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
                       {r.mode === "in" ? "IN" : "OUT"}
                     </span>
                   </li>
