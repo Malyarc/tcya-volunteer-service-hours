@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { buildRosterSheetData } from "./volunteerExports";
+import {
+  buildRosterSheetData,
+  avery74461Placements,
+  AVERY_74461,
+} from "./volunteerExports";
 import type { Volunteer } from "./types";
 
 function vol(over: Partial<Volunteer> = {}): Volunteer {
@@ -51,5 +55,63 @@ describe("buildRosterSheetData", () => {
 
   it("handles an empty roster without throwing", () => {
     expect(buildRosterSheetData([])).toEqual({ rows: [], customKeys: [] });
+  });
+});
+
+describe("avery74461Placements", () => {
+  // Ground truth read off Avery's template PDF: 8 cells (2 cols × 4 rows),
+  // columns at 0.75"/4.25", rows at 1.0625"/3.28125"/5.5"/7.71875" from the top,
+  // each cell 3.5"×2.21875". The card art (3.5"×2") fills the width and is
+  // centered in the taller cell → 0.109375" vertical inset.
+  const inset = (AVERY_74461.cellHIn - 2) / 2; // = 0.109375
+
+  it("places 8 cards on one sheet in the exact template cells", () => {
+    const p = avery74461Placements(8);
+    expect(p).toHaveLength(8);
+    expect(p.every((c) => c.page === 0)).toBe(true);
+    // Every card is 3.5" wide × 2" tall.
+    expect(p.every((c) => c.w === 3.5 && c.h === 2)).toBe(true);
+
+    // Reading order is row-major: [col0,row0], [col1,row0], [col0,row1], ...
+    expect(p[0].x).toBeCloseTo(0.75, 6);
+    expect(p[0].y).toBeCloseTo(1.0625 + inset, 6);
+    expect(p[1].x).toBeCloseTo(4.25, 6);
+    expect(p[1].y).toBeCloseTo(1.0625 + inset, 6);
+    expect(p[2].x).toBeCloseTo(0.75, 6);
+    expect(p[2].y).toBeCloseTo(3.28125 + inset, 6);
+    expect(p[7].x).toBeCloseTo(4.25, 6);
+    expect(p[7].y).toBeCloseTo(7.71875 + inset, 6);
+  });
+
+  it("keeps every card inside the printable page and its cell", () => {
+    for (const c of avery74461Placements(8)) {
+      expect(c.x).toBeGreaterThanOrEqual(0);
+      expect(c.y).toBeGreaterThanOrEqual(0);
+      // Right/bottom edges stay on the 8.5×11 sheet.
+      expect(c.x + c.w).toBeLessThanOrEqual(AVERY_74461.pageW + 1e-9);
+      expect(c.y + c.h).toBeLessThanOrEqual(AVERY_74461.pageH + 1e-9);
+      // Card never exceeds its cell.
+      expect(c.w).toBeLessThanOrEqual(AVERY_74461.cellWIn + 1e-9);
+      expect(c.h).toBeLessThanOrEqual(AVERY_74461.cellHIn + 1e-9);
+    }
+  });
+
+  it("adjacent cards tile edge-to-edge horizontally (perforation-aligned)", () => {
+    const p = avery74461Placements(2);
+    expect(p[0].x + p[0].w).toBeCloseTo(p[1].x, 6); // 0.75+3.5 = 4.25
+    // Symmetric side margins: left margin equals right margin.
+    const rightMargin = AVERY_74461.pageW - (p[1].x + p[1].w);
+    expect(rightMargin).toBeCloseTo(p[0].x, 6); // both 0.75"
+  });
+
+  it("overflows onto a second sheet after 8 cards", () => {
+    const p = avery74461Placements(9);
+    expect(p[8].page).toBe(1);
+    expect(p[8].x).toBeCloseTo(0.75, 6);
+    expect(p[8].y).toBeCloseTo(1.0625 + inset, 6);
+  });
+
+  it("returns nothing for an empty roster", () => {
+    expect(avery74461Placements(0)).toEqual([]);
   });
 });
