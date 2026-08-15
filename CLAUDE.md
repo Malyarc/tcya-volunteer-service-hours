@@ -25,8 +25,14 @@ Postgres** database.
 - Frontend: `client/` (Vite + React + Tailwind). QR generation in `client/src/qr.ts`
   (payload + `formatDisplayId`). The ID **card** is drawn by one canvas renderer,
   `client/src/cardRenderer.ts`, which feeds the modal preview, PNG/copy, and the
-  single + bulk PDFs (`volunteerExports.ts`) — WYSIWYG. Scanner in
+  single + bulk PDFs (`volunteerExports.ts`) — WYSIWYG. The **bulk** PDF lays the
+  cards on the **Avery 74461** clip-badge grid (8/sheet, exact template coords in
+  `AVERY_74461` + the pure `avery74461Placements`); `buildQrIdCardsPdf` returns
+  the doc, `downloadQrIdCardsPdf` saves it. Scanner in
   `client/src/components/admin/ScannerModal.tsx`.
+- **Brand logo:** the lotus + cupped-hands + candle emblem is `/cert-logo.png`
+  (header, passcode gate, ID card, certificate). `/tzu-chi-logo.png` is the older
+  ship emblem — now unused; do not reintroduce it into the chrome.
 - **Display ID vs canonical code:** the human-facing ID is the branded
   `ELA-TCYA-001` form (`formatDisplayId(code)`), shown on the card, QR modal, admin
   roster, and Excel export. The stored `code` and the QR payload keep the canonical

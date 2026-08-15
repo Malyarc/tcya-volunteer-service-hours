@@ -1,8 +1,42 @@
 # Handoff — ELA TCYA Volunteer Service Hours
 
-Single source of truth for the project's current state. Last updated: 2026-08-01.
+Single source of truth for the project's current state. Last updated: 2026-08-14.
 
-## Round 5 (latest) — GO LIVE: real roster + hours, new ID-card design
+## Round 6 (latest) — Avery 74461 badge sheet + brand-logo fix
+
+Two chapter-requested changes. Frontend-only (no DB / API / schema change);
+green bar passing, verified live in the running app.
+
+### 1. Bulk ID-card PDF now matches Avery 74461 (clip-style name badges)
+
+- The "QR ID Cards (PDF)" bulk export (`downloadQrIdCardsPdf`) previously used an
+  arbitrary 2-col grid (0.4" margins, 0.3" gaps) that lined up with no physical
+  stock. It now lays cards on **Avery 74461** exactly: **8 inserts / US-Letter
+  sheet, 2 cols × 4 rows**, columns at **0.75"/4.25"**, rows at
+  **1.0625"/3.28125"/5.5"/7.71875"** from the top, cells **3.5"×2.21875"**. These
+  numbers were read straight off Avery's own template PDF (612×792pt, rectangles
+  252×159.75pt), so a printed sheet drops into the clip-badge holders unadjusted.
+- Each 3.5"×2" card **fills the cell width and is centered vertically** (the
+  ~0.11" top/bottom slack tucks under the holder frame). The card art is
+  unchanged — same one renderer, so the modal/PNG/single-PDF still match.
+- Refactor: `avery74461Placements(count)` is a **pure, unit-tested** layout
+  function; `buildQrIdCardsPdf()` returns the jsPDF doc; `downloadQrIdCardsPdf()`
+  is the thin IO wrapper (mirrors `buildRosterSheetData` for the Excel export).
+- **Verified live:** drove the real `buildQrIdCardsPdf` in the running app with 8
+  volunteers (incl. a long wrapping name) → the actual PDF's 8 cards register
+  pixel-exactly inside the Avery template cells (overlay checked at 150 dpi).
+  Geometry unit tests pin the coordinates; 34 client tests pass.
+
+### 2. Brand logo corrected (header + passcode gate)
+
+- The header and the passcode-gate chrome still showed the **ship emblem**
+  (`/tzu-chi-logo.png`). Both now use the **lotus + cupped-hands + candle** logo
+  (`/cert-logo.png`) — the same emblem the ID cards and certificate already use.
+  `tzu-chi-logo.png` is now unreferenced (left in `public/` for now).
+- **Verified live:** only `/cert-logo.png` is fetched (200), no request for
+  `tzu-chi-logo.png`, no console errors; header + gate render the lotus emblem.
+
+## Round 5 — GO LIVE: real roster + hours, new ID-card design
 
 **Production now holds REAL data** (was dummy/seed before). Both tasks shipped +
 verified live on https://tcyavolunteers.netlify.app.
