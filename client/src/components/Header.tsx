@@ -91,8 +91,8 @@ export function Header({
           <div className="flex items-center gap-5">
             <div className="flex items-center justify-center rounded-2xl bg-white px-3 py-2 shadow-lg shadow-brand-950/25 ring-1 ring-white/60">
               <img
-                src="/tzu-chi-logo.png"
-                alt="Buddhist Tzu Chi Foundation"
+                src="/cert-logo.png"
+                alt="Tzu Chi Youth Association"
                 className="h-14 w-auto sm:h-16"
               />
             </div>

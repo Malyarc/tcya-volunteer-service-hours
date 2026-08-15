@@ -114,7 +114,7 @@ export function PasscodeGate({ onUnlock }: Props) {
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white p-1.5 shadow-md shadow-brand-950/30 ring-1 ring-white/60">
               <img
-                src="/tzu-chi-logo.png"
+                src="/cert-logo.png"
                 alt=""
                 className="h-full w-auto object-contain"
               />
