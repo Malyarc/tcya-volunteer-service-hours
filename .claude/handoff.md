@@ -16,9 +16,15 @@ green bar passing, verified live in the running app.
   **1.0625"/3.28125"/5.5"/7.71875"** from the top, cells **3.5"×2.21875"**. These
   numbers were read straight off Avery's own template PDF (612×792pt, rectangles
   252×159.75pt), so a printed sheet drops into the clip-badge holders unadjusted.
-- Each 3.5"×2" card **fills the cell width and is centered vertically** (the
-  ~0.11" top/bottom slack tucks under the holder frame). The card art is
-  unchanged — same one renderer, so the modal/PNG/single-PDF still match.
+- Each card **fills its whole cell edge-to-edge** — full 3.5" width AND full
+  2.21875" height, zero inset — so the printed cards butt together with no gaps
+  (the cells tile at a 2.21875" pitch), matching the sheet's attached perforated
+  inserts. To fill without distortion the card was **resized to the badge's own
+  proportions** (`CARD_H` 600→666, so 3.5"×2.21875", CARD_ASPECT ≈ 1.577) and
+  `drawCard` re-tuned (band/logo/org/QR/name) to look balanced at the taller size.
+  Still ONE renderer, so the modal preview, PNG, and single-card PDF (now a single
+  3.5×2.21875 insert) all match. `AVERY_74461.cellHIn` = 2.21875" is the template's
+  true row pitch (Avery markets it as 2.25"; the ~0.03" is nominal rounding).
 - Refactor: `avery74461Placements(count)` is a **pure, unit-tested** layout
   function; `buildQrIdCardsPdf()` returns the jsPDF doc; `downloadQrIdCardsPdf()`
   is the thin IO wrapper (mirrors `buildRosterSheetData` for the Excel export).
