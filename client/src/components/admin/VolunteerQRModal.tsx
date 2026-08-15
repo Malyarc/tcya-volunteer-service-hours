@@ -144,7 +144,7 @@ export function VolunteerQRModal({ volunteer, onClose }: Props) {
                 className="block w-full"
               />
             ) : (
-              <div className="flex aspect-[1050/600] w-full items-center justify-center bg-slate-50 text-xs text-slate-400">
+              <div className="flex aspect-[1050/666] w-full items-center justify-center bg-slate-50 text-xs text-slate-400">
                 {status || "Rendering…"}
               </div>
             )}

@@ -16,9 +16,12 @@
 import type { Volunteer } from "./types";
 import { buildQrPayload, qrPngDataUrl, formatDisplayId } from "./qr";
 
-// Logical card canvas: 3.5in × 2in at 300dpi (standard ID-card proportions).
+// Logical card canvas: 3.5in × 2.21875in — the Avery 74461 clip-badge insert
+// proportions (a hair taller than a credit-card CR80). Sized so one card fills a
+// badge cell edge-to-edge with no distortion. Height derived from the badge ratio:
+// 1050 * 2.21875 / 3.5 = 665.625 ≈ 666 (a 0.06% aspect nudge, invisible in print).
 export const CARD_W = 1050;
-export const CARD_H = 600;
+export const CARD_H = 666;
 export const CARD_ASPECT = CARD_W / CARD_H;
 
 const FONT_STACK =
@@ -115,7 +118,7 @@ export interface CardParts {
 // path can also draw straight onto a scaled canvas.
 export function drawCard(ctx: CanvasRenderingContext2D, parts: CardParts) {
   const { logo, qr, name, displayId } = parts;
-  const bandH = 206;
+  const bandH = 214;
 
   // background + header band
   ctx.fillStyle = "#ffffff";
@@ -124,7 +127,7 @@ export function drawCard(ctx: CanvasRenderingContext2D, parts: CardParts) {
   ctx.fillRect(0, 0, CARD_W, bandH);
 
   // logo (left, vertically centered in the band)
-  drawContain(ctx, logo, 46, 16, 256, bandH - 34, "left");
+  drawContain(ctx, logo, 46, 18, 262, bandH - 36, "left");
 
   // org text (right-aligned): regular line 1, bold line 2
   const orgRight = CARD_W - 52;
@@ -132,43 +135,44 @@ export function drawCard(ctx: CanvasRenderingContext2D, parts: CardParts) {
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = COLORS.org;
   ctx.font = `500 44px ${FONT_STACK}`;
-  ctx.fillText("Tzu Chi Youth Association US", orgRight, 82);
+  ctx.fillText("Tzu Chi Youth Association US", orgRight, 88);
   ctx.font = `700 50px ${FONT_STACK}`;
-  ctx.fillText("East LA 東洛慈少", orgRight, 152);
+  ctx.fillText("East LA 東洛慈少", orgRight, 160);
 
-  // QR (right) — vertically centered in the body, ID centered beneath it
-  const qrSize = 224;
-  const qrRightMargin = 74;
+  // QR (right) with the branded ID centered just beneath it. The QR square is
+  // centered in the white body (lifted a touch so the ID caption stays balanced).
+  const qrSize = 236;
+  const qrRightMargin = 76;
   const qrX = CARD_W - qrRightMargin - qrSize;
-  const idGap = 40;
+  const idGap = 34;
   const bodyTop = bandH;
   const bodyH = CARD_H - bandH;
-  const qrY = bodyTop + (bodyH - (qrSize + idGap)) / 2;
+  const qrY = bodyTop + (bodyH - qrSize) / 2 - 8;
   ctx.drawImage(qr, qrX, qrY, qrSize, qrSize);
 
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = COLORS.id;
   ctx.font = `600 30px ${FONT_STACK}`;
-  ctx.fillText(displayId, qrX + qrSize / 2, qrY + qrSize + 34);
+  ctx.fillText(displayId, qrX + qrSize / 2, qrY + qrSize + idGap);
 
-  // name (left) — one big line if it fits; otherwise first name on row 1 and
-  // last name on row 2. Vertically centered in the white body.
+  // name (left) — aligned to the QR's vertical center so name + QR read as one
+  // row. One big line if it fits; otherwise first name on row 1, last on row 2.
   const nameLeft = 60;
   const nameMaxW = qrX - 44 - nameLeft;
-  const bodyMidY = bodyTop + bodyH / 2;
+  const rowMidY = qrY + qrSize / 2;
   ctx.textAlign = "left";
   ctx.fillStyle = COLORS.name;
 
-  const oneLine = fitOneLine(ctx, name, nameMaxW, 800, 116, 78);
+  const oneLine = fitOneLine(ctx, name, nameMaxW, 800, 120, 78);
   const firstLast = splitFirstLast(name);
   if (oneLine) {
     ctx.font = `800 ${oneLine}px ${FONT_STACK}`;
     ctx.textBaseline = "middle";
-    ctx.fillText(name, nameLeft, bodyMidY + 6);
+    ctx.fillText(name, nameLeft, rowMidY + 2);
   } else if (firstLast) {
     // Two rows: first name, then last name — each as large as fits.
-    let fs = 104;
+    let fs = 108;
     for (; fs >= 40; fs -= 2) {
       ctx.font = `800 ${fs}px ${FONT_STACK}`;
       if (
@@ -180,14 +184,14 @@ export function drawCard(ctx: CanvasRenderingContext2D, parts: CardParts) {
     ctx.font = `800 ${fs}px ${FONT_STACK}`;
     ctx.textBaseline = "alphabetic";
     const lineH = fs * 1.12;
-    ctx.fillText(firstLast[0], nameLeft, bodyMidY - lineH / 2 + fs * 0.35);
-    ctx.fillText(firstLast[1], nameLeft, bodyMidY + lineH / 2 + fs * 0.35);
+    ctx.fillText(firstLast[0], nameLeft, rowMidY - lineH / 2 + fs * 0.35);
+    ctx.fillText(firstLast[1], nameLeft, rowMidY + lineH / 2 + fs * 0.35);
   } else {
     // Single unsplittable token too long for one line — shrink to fit.
     const fs = fitOneLine(ctx, name, nameMaxW, 800, 78, 34) || 34;
     ctx.font = `800 ${fs}px ${FONT_STACK}`;
     ctx.textBaseline = "middle";
-    ctx.fillText(name, nameLeft, bodyMidY + 6);
+    ctx.fillText(name, nameLeft, rowMidY + 2);
   }
 
   // subtle outer border (drawn last so it sits on top)

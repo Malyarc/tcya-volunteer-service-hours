@@ -16,7 +16,7 @@ import {
   dataUrlToBlob,
   formatDisplayId,
 } from "./qr";
-import { renderCardPng, CARD_ASPECT } from "./cardRenderer";
+import { renderCardPng } from "./cardRenderer";
 import { todayYmd } from "./utils";
 
 // ---------- Excel roster ----------
@@ -95,9 +95,9 @@ export async function downloadIdCardPng(v: Volunteer) {
 export async function downloadIdCardPdf(v: Volunteer) {
   const { jsPDF } = await import("jspdf");
   const png = await renderCardPng(v);
-  // Standard 3.5in × 2in card.
-  const doc = new jsPDF({ unit: "in", format: [3.5, 2] });
-  doc.addImage(png, "PNG", 0, 0, 3.5, 2, undefined, "FAST");
+  // One Avery 74461 insert (3.5in × 2.21875in) — the card fills it edge-to-edge.
+  const doc = new jsPDF({ unit: "in", format: [3.5, 2.21875] });
+  doc.addImage(png, "PNG", 0, 0, 3.5, 2.21875, undefined, "FAST");
   doc.save(`id-card-${safeFileName(v.name)}.pdf`);
 }
 
@@ -129,17 +129,15 @@ export interface CardPlacement {
 }
 
 // Pure layout: where each of `count` cards lands on the Avery 74461 sheet(s).
-// The card art is 3.5"×2" (CARD_ASPECT), so it fills each cell's full 3.5" width
-// and is centered vertically in the slightly taller cell — the design sits inside
-// the badge-holder window and the ~0.11" top/bottom slack tucks under the frame.
+// The card art has the badge's own proportions (CARD_ASPECT ≈ 3.5:2.21875), so
+// each card FILLS its whole cell — full 3.5" width AND full 2.21875" height, with
+// zero inset. Because the cells tile at a 2.21875" pitch, the cards butt up against
+// each other with no gaps (matching the sheet's attached perforated inserts).
 // Kept pure (no canvas/jsPDF) so the geometry is unit-testable against the
 // template coordinates above.
 export function avery74461Placements(count: number): CardPlacement[] {
   const { cols, colLeftsIn, rowTopsIn, cellWIn, cellHIn } = AVERY_74461;
   const perPage = cols * rowTopsIn.length;
-  const w = cellWIn;
-  const h = w / CARD_ASPECT;
-  const yInset = Math.max(0, (cellHIn - h) / 2);
 
   const out: CardPlacement[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -147,9 +145,9 @@ export function avery74461Placements(count: number): CardPlacement[] {
     out.push({
       page: Math.floor(i / perPage),
       x: colLeftsIn[onPage % cols],
-      y: rowTopsIn[Math.floor(onPage / cols)] + yInset,
-      w,
-      h,
+      y: rowTopsIn[Math.floor(onPage / cols)],
+      w: cellWIn,
+      h: cellHIn,
     });
   }
   return out;
