@@ -1,0 +1,43 @@
+# Local, throwaway Postgres for the MANDATORY store-parity gate.
+#
+# The app talks to Neon over its SQL-over-HTTP protocol (@neondatabase/serverless),
+# not the Postgres wire protocol, so a plain `postgres:17` container is not enough
+# on its own — `local-neon-http-proxy` speaks Neon's HTTP API in front of it.
+#
+# Usage (from server/):
+#   docker compose -f test/docker-compose.parity.yml up -d
+#   TEST_DATABASE_URL='postgres://postgres:postgres@db.localtest.me:5432/scratchdb' \
+#     TEST_NEON_HTTP_PROXY=1 npm test
+#   docker compose -f test/docker-compose.parity.yml down -v
+#
+# `db.localtest.me` resolves to 127.0.0.1 and is the hostname the proxy expects;
+# the URL carries the "local"/"scratch" markers the suite's prod-wipe guard
+# requires. NEVER point TEST_DATABASE_URL at the production Neon string.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: scratchdb
+    # Deliberately NOT published to the host: the proxy reaches Postgres over
+    # the compose network, and leaving 5432 free avoids clashing with whatever
+    # Postgres the developer already runs locally.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d scratchdb"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  neon-http-proxy:
+    image: ghcr.io/timowilhelm/local-neon-http-proxy:main
+    environment:
+      PG_CONNECTION_STRING: postgres://postgres:postgres@postgres:5432/scratchdb
+    ports:
+      - "4444:4444"
+    depends_on:
+      postgres:
+        condition: service_healthy

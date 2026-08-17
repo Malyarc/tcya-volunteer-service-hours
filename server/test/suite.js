@@ -7,6 +7,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SEED_VOLUNTEERS } from "../src/data/seed-volunteers.js";
+import {
+  OFFICER_NAMES,
+  RETIRED_MEMBER_NAMES,
+} from "../src/db/data-migrations.js";
 
 export function runSuite(withServer, label) {
   const name = (t) => `[${label}] ${t}`;
@@ -16,6 +20,14 @@ export function runSuite(withServer, label) {
   // is a distinct second seeded volunteer. Both are plain-ASCII seed entries.
   const V1 = SEED_VOLUNTEERS[0];
   const V2 = SEED_VOLUNTEERS[1];
+  // A seeded volunteer the officer migration promotes, and one it must not
+  // touch — both asserted below, so a mistake in either list fails loudly.
+  const OFFICER = OFFICER_NAMES.find((n) => SEED_VOLUNTEERS.includes(n));
+  assert.ok(OFFICER, "at least one officer must exist in the seeded roster");
+  assert.ok(
+    !OFFICER_NAMES.includes(V1) && !OFFICER_NAMES.includes(V2),
+    "the V1/V2 fixtures must be ordinary volunteers so cap tests stay meaningful"
+  );
 
   async function adminToken(api) {
     const r = await api.send("POST", "/api/login", {
@@ -107,7 +119,7 @@ export function runSuite(withServer, label) {
 
   // ---------------- Roster (public, no PII) ----------------
 
-  test(name("public roster returns names + grade only, never contact info"), async () => {
+  test(name("public roster returns names + grade + role only, never contact info"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const vols = (await api.get("/api/volunteers", auth)).body;
@@ -123,9 +135,17 @@ export function runSuite(withServer, label) {
       assert.ok(Array.isArray(roster.body));
       const r = roster.body.find((x) => x.name === V1);
       assert.ok(r);
-      assert.deepEqual(Object.keys(r).sort(), ["grade", "name"]);
+      assert.deepEqual(Object.keys(r).sort(), ["grade", "name", "role"]);
       assert.equal(JSON.stringify(roster.body).includes("555-1234"), false);
       assert.equal(JSON.stringify(roster.body).includes("a@x.com"), false);
+      // The roster must list EXACTLY the volunteer records — no more, no fewer.
+      // This is the Roster-tab == Volunteers-tab invariant, enforced at the API.
+      const all = (await api.get("/api/volunteers", auth)).body;
+      assert.deepEqual(
+        roster.body.map((x) => x.name).sort(),
+        all.map((v) => v.name).sort(),
+        "the public roster is exactly the volunteer roster"
+      );
     });
   });
 
@@ -944,6 +964,362 @@ export function runSuite(withServer, label) {
       );
       assert.equal(adm.code, "TCYA-0001", "admin sees the code");
       assert.ok(adm.checkinAt, "admin sees the check-in time");
+    });
+  });
+
+  // ---------------- Officers (roles) ----------------
+
+  test(name("the one-time migration promotes the chapter's officers and no one else"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const vols = (await api.get("/api/volunteers", auth)).body;
+      for (const n of OFFICER_NAMES) {
+        const v = vols.find((x) => x.name === n);
+        if (!v) continue; // not on this roster — migration correctly skips it
+        assert.equal(v.role, "officer", `${n} should be an officer`);
+      }
+      assert.equal(
+        vols.find((v) => v.name === V1).role,
+        "volunteer",
+        "a non-officer keeps the default role"
+      );
+      // The former members the purge migration targets must not be on the
+      // roster at all (they are not seeded), so nothing can resurrect them.
+      for (const n of RETIRED_MEMBER_NAMES) {
+        assert.equal(
+          vols.some((v) => v.name === n),
+          false,
+          `${n} must not be seeded back onto the roster`
+        );
+      }
+    });
+  });
+
+  test(name("role is editable, validated, and surfaced on the roster + attendance"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const v1 = (await api.get("/api/volunteers", auth)).body.find((v) => v.name === V1);
+
+      const bad = await api.send("PATCH", `/api/volunteers/${v1.id}`, { role: "admin" }, auth);
+      assert.equal(bad.status, 400, "an unknown role is rejected, never silently demoted");
+
+      const up = await api.send("PATCH", `/api/volunteers/${v1.id}`, { role: "officer" }, auth);
+      assert.equal(up.status, 200);
+      assert.equal(up.body.role, "officer");
+      assert.equal(
+        (await api.get("/api/roster")).body.find((r) => r.name === V1).role,
+        "officer",
+        "the public roster shows the badge-driving role"
+      );
+
+      // The attendance row carries the role too, so the event page can badge it.
+      const event = await makeEvent(api, auth);
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V1] }, auth);
+      const row = (await api.get("/api/events", auth)).body[0].attendance.find(
+        (a) => a.volunteerName === V1
+      );
+      assert.equal(row.role, "officer");
+    });
+  });
+
+  // ---------------- Expected hours + the per-event cap ----------------
+
+  test(name("events store start/end time + expected hours, and validate them"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const ev = await makeEvent(api, auth, {
+        startTime: "09:00",
+        endTime: "12:30",
+        expectedHours: 3.5,
+      });
+      assert.equal(ev.startTime, "09:00");
+      assert.equal(ev.endTime, "12:30");
+      assert.equal(ev.expectedHours, 3.5);
+
+      // Defaults when omitted: no times, and NO cap (null, not 0).
+      const bare = await makeEvent(api, auth);
+      assert.equal(bare.startTime, "");
+      assert.equal(bare.endTime, "");
+      assert.equal(bare.expectedHours, null, "omitted expected hours means no cap");
+
+      for (const bad of [
+        { startTime: "9am" },
+        { endTime: "25:00" },
+        { expectedHours: -1 },
+        { expectedHours: "lots" },
+      ]) {
+        const r = await api.send(
+          "POST",
+          "/api/events",
+          { name: "Culture - Beach Cleanup", date: "2026-03-15", ...bad },
+          auth
+        );
+        assert.equal(r.status, 400, `should reject ${JSON.stringify(bad)}`);
+      }
+    });
+  });
+
+  test(name("an ordinary volunteer's hours are capped at the event's expected hours"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth, { expectedHours: 3 });
+      // 16:00Z → 20:00Z is a 4.0h span; the event is only worth 3.
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T20:00:00.000Z");
+      const sub = (await api.get("/api/submissions", auth)).body.find(
+        (s) => s.volunteerName === V1
+      );
+      assert.equal(sub.hours, 3, "credited hours are capped at the expected hours");
+      assert.equal(sub.rawHours, 4, "the uncapped span is still recorded");
+    });
+  });
+
+  test(name("an OFFICER exceeds the expected hours (set-up time counts)"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth, { expectedHours: 3 });
+      await logHours(api, auth, event.id, OFFICER, "2026-03-15T16:00:00.000Z", "2026-03-15T20:00:00.000Z");
+      const sub = (await api.get("/api/submissions", auth)).body.find(
+        (s) => s.volunteerName === OFFICER
+      );
+      assert.equal(sub.hours, 4, "officers are not capped");
+      assert.equal(sub.rawHours, 4);
+    });
+  });
+
+  test(name("a volunteer under the cap keeps their real hours"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth, { expectedHours: 5 });
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T18:00:00.000Z");
+      const sub = (await api.get("/api/submissions", auth)).body.find(
+        (s) => s.volunteerName === V1
+      );
+      assert.equal(sub.hours, 2, "the cap is a ceiling, not a target");
+    });
+  });
+
+  test(name("an event with NO expected hours caps nobody (existing history is untouched)"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth); // no expectedHours
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T23:00:00.000Z");
+      const sub = (await api.get("/api/submissions", auth)).body.find(
+        (s) => s.volunteerName === V1
+      );
+      assert.equal(sub.hours, 7, "no cap set ⇒ the full span is credited");
+      assert.equal(sub.rawHours, 7);
+    });
+  });
+
+  test(name("PATCH /events applies the new expected hours to ALREADY-logged hours"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth); // uncapped to start
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T20:00:00.000Z");
+      await logHours(api, auth, event.id, OFFICER, "2026-03-15T16:00:00.000Z", "2026-03-15T20:00:00.000Z");
+      const before = (await api.get("/api/submissions", auth)).body;
+      assert.equal(before.find((s) => s.volunteerName === V1).hours, 4);
+
+      const patched = await api.send("PATCH", `/api/events/${event.id}`, { expectedHours: 2.5 }, auth);
+      assert.equal(patched.status, 200);
+      assert.equal(patched.body.expectedHours, 2.5);
+
+      const after = (await api.get("/api/submissions", auth)).body;
+      assert.equal(
+        after.find((s) => s.volunteerName === V1).hours,
+        2.5,
+        "the volunteer's already-credited hours are re-derived down to the cap"
+      );
+      assert.equal(
+        after.find((s) => s.volunteerName === OFFICER).hours,
+        4,
+        "the officer is still uncapped"
+      );
+      // Raising the cap again restores the full span.
+      await api.send("PATCH", `/api/events/${event.id}`, { expectedHours: null }, auth);
+      assert.equal(
+        (await api.get("/api/submissions", auth)).body.find((s) => s.volunteerName === V1).hours,
+        4,
+        "clearing the cap restores the real hours — the raw span is never lost"
+      );
+    });
+  });
+
+  test(name("promoting a volunteer to officer re-derives their EXISTING hours"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth, { expectedHours: 3 });
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T20:00:00.000Z");
+      assert.equal(
+        (await api.get("/api/submissions", auth)).body.find((s) => s.volunteerName === V1).hours,
+        3
+      );
+      const v1 = (await api.get("/api/volunteers", auth)).body.find((v) => v.name === V1);
+      await api.send("PATCH", `/api/volunteers/${v1.id}`, { role: "officer" }, auth);
+      assert.equal(
+        (await api.get("/api/submissions", auth)).body.find((s) => s.volunteerName === V1).hours,
+        4,
+        "promotion lifts the cap on hours already recorded"
+      );
+      await api.send("PATCH", `/api/volunteers/${v1.id}`, { role: "volunteer" }, auth);
+      assert.equal(
+        (await api.get("/api/submissions", auth)).body.find((s) => s.volunteerName === V1).hours,
+        3,
+        "demotion re-applies it"
+      );
+    });
+  });
+
+  test(name("PATCH /events renaming/redating an event re-syncs its derived submissions"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z");
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}`,
+        { name: "Others - please specify", customName: "Rescheduled Cleanup", date: "2026-04-02" },
+        auth
+      );
+      const sub = (await api.get("/api/submissions", auth)).body.find(
+        (s) => s.volunteerName === V1
+      );
+      assert.equal(sub.eventDate, "2026-04-02", "the submission follows the event's date");
+      assert.equal(sub.eventName, "Rescheduled Cleanup");
+      assert.equal(sub.customEventName, "Rescheduled Cleanup");
+      assert.equal(sub.hours, 3, "hours are unchanged by a rename");
+    });
+  });
+
+  test(name("PATCH /events validates, 404s on an unknown event, and needs a field"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      assert.equal(
+        (await api.send("PATCH", `/api/events/${event.id}`, { date: "nope" }, auth)).status,
+        400
+      );
+      assert.equal(
+        (await api.send("PATCH", `/api/events/${event.id}`, {}, auth)).status,
+        400
+      );
+      assert.equal(
+        (await api.send("PATCH", `/api/events/${event.id}`, { date: "2026-05-01" })).status,
+        401,
+        "editing an event requires admin"
+      );
+      assert.equal(
+        (await api.send(
+          "PATCH",
+          "/api/events/11111111-1111-1111-1111-111111111111",
+          { date: "2026-05-01" },
+          auth
+        )).status,
+        404
+      );
+    });
+  });
+
+  // ---------------- Conduct strikes ----------------
+
+  test(name("an admin can add and clear a strike; it never touches hours"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth, { expectedHours: 4 });
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z");
+
+      const on = await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, strikes: 1 },
+        auth
+      );
+      assert.equal(on.status, 200);
+      assert.equal(on.body.attendance.find((a) => a.volunteerName === V1).strikes, 1);
+      assert.equal(
+        (await api.get("/api/submissions", auth)).body.find((s) => s.volunteerName === V1).hours,
+        3,
+        "a strike does not change credited hours"
+      );
+
+      const off = await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, strikes: 0 },
+        auth
+      );
+      assert.equal(off.body.attendance.find((a) => a.volunteerName === V1).strikes, 0);
+    });
+  });
+
+  test(name("attendance rows default to 0 strikes and reject malformed values"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      const added = await api.send(
+        "POST",
+        `/api/events/${event.id}/attendance`,
+        { volunteerNames: [V1] },
+        auth
+      );
+      assert.equal(added.body.attendance[0].strikes, 0);
+
+      for (const bad of [-1, 1.5, "many", 1000]) {
+        const r = await api.send(
+          "PATCH",
+          `/api/events/${event.id}/attendance`,
+          { volunteerName: V1, strikes: bad },
+          auth
+        );
+        assert.equal(r.status, 400, `should reject strikes=${JSON.stringify(bad)}`);
+      }
+      // …and the original value survived every rejected write.
+      const row = (await api.get("/api/events", auth)).body[0].attendance.find(
+        (a) => a.volunteerName === V1
+      );
+      assert.equal(row.strikes, 0);
+    });
+  });
+
+  test(name("strikes survive a check-in toggle and reach the public roster view"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V1] }, auth);
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, strikes: 2 },
+        auth
+      );
+      // Toggling attendance must not clobber an unrelated column.
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, staffCheckin: true },
+        auth
+      );
+      const pub = (await api.get("/api/events")).body[0].attendance.find(
+        (a) => a.volunteerName === V1
+      );
+      assert.equal(pub.strikes, 2, "the strike count survived and is visible to volunteers");
+      assert.equal(pub.code, undefined, "…without leaking the QR code");
+      assert.equal(pub.checkinAt, undefined, "…or the check-in time");
+    });
+  });
+
+  test(name("public /submissions hides the uncapped raw hours; admin sees them"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth, { expectedHours: 1 });
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T20:00:00.000Z");
+      const pub = (await api.get("/api/submissions")).body.find((s) => s.volunteerName === V1);
+      assert.equal(pub.hours, 1, "the public sees the credited total");
+      assert.equal(pub.rawHours, undefined, "…but not the exact time on site");
+      const adm = (await api.get("/api/submissions", auth)).body.find(
+        (s) => s.volunteerName === V1
+      );
+      assert.equal(adm.rawHours, 4, "the admin can see why the credit was capped");
     });
   });
 }

@@ -4,6 +4,12 @@ import { checkInByCode, checkOutByCode } from "../../api";
 import { parseScannedCode, formatDisplayId } from "../../qr";
 import { formatClockFromIso, getEventDisplayName } from "../../utils";
 import { useFocusTrap } from "../../useFocusTrap";
+import {
+  ScanFlash,
+  playScanTone,
+  type ScanFlashKind,
+  type ScanFlashState,
+} from "./ScanFlash";
 
 type Mode = "in" | "out";
 type Feedback = { kind: "ok" | "warn" | "error"; text: string; at: number } | null;
@@ -36,7 +42,12 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
   const [manualCode, setManualCode] = useState("");
   const [manualPick, setManualPick] = useState("");
   const [processing, setProcessing] = useState(false);
+  // The big centred confirmation shown over the camera after each scan.
+  const [flash, setFlash] = useState<ScanFlashState | null>(null);
   const scanIdRef = useRef(0);
+  // Monotonic id so re-scanning the same volunteer re-triggers the animation
+  // (React would otherwise see an identical state object and not re-run it).
+  const flashIdRef = useRef(0);
   const dialogRef = useRef<HTMLDivElement>(null);
   useFocusTrap(dialogRef, open);
 
@@ -75,21 +86,12 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
     }
   }
 
-  function beep(kind: "ok" | "error") {
+  function beep(kind: ScanFlashKind) {
     try {
       ensureAudio();
       const ctx = audioRef.current;
       if (!ctx) return;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = kind === "ok" ? 880 : 240;
-      gain.gain.setValueAtTime(0.001, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.19);
+      playScanTone(ctx, kind);
     } catch {
       /* audio is best-effort */
     }
@@ -112,6 +114,13 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
       const parsed = parseScannedCode(rawCode);
       if (!parsed) {
         setFeedback({ kind: "warn", text: "That QR isn't a TCYA volunteer code.", at: Date.now() });
+        setFlash({
+          id: (flashIdRef.current += 1),
+          kind: "error",
+          title: "Not a TCYA code",
+          subtitle: "Try another QR",
+          mode: modeRef.current,
+        });
         if (source === "scan") beep("error");
         return;
       }
@@ -128,12 +137,23 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
         const res = await fn(eventIdRef.current, parsed.code);
         onScanned(res.event);
         const t = inMode ? res.attendance.checkinAt : res.attendance.checkoutAt;
-        beep("ok");
+        beep(res.alreadyDone ? "warn" : "ok");
         // Distinguish a fresh scan from re-scanning someone already done.
         const text = res.alreadyDone
           ? `${res.volunteer.name} was already checked ${verb}${t ? " at " + formatClockFromIso(t) : ""}`
           : `${res.volunteer.name} checked ${verb}${t ? " at " + formatClockFromIso(t) : ""}`;
         setFeedback({ kind: res.alreadyDone ? "warn" : "ok", text, at: Date.now() });
+        // The big centred confirmation: the volunteer's NAME is the headline so
+        // the operator can confirm the right person from arm's length.
+        setFlash({
+          id: (flashIdRef.current += 1),
+          kind: res.alreadyDone ? "warn" : "ok",
+          title: res.volunteer.name,
+          subtitle: res.alreadyDone
+            ? `Already checked ${verb}${t ? " · " + formatClockFromIso(t) : ""}`
+            : `Checked ${verb}${t ? " · " + formatClockFromIso(t) : ""}`,
+          mode,
+        });
         setRecent((prev) =>
           [
             {
@@ -151,6 +171,13 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
         beep("error");
         const msg = err instanceof Error ? err.message : "Scan failed.";
         setFeedback({ kind: "error", text: msg, at: Date.now() });
+        setFlash({
+          id: (flashIdRef.current += 1),
+          kind: "error",
+          title: "Scan failed",
+          subtitle: msg.slice(0, 60),
+          mode,
+        });
         setRecent((prev) =>
           [
             { id: (scanIdRef.current += 1), name: msg, code: parsed.code, mode, time: "", status: "unknown" as const },
@@ -269,10 +296,12 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
     runIdRef.current += 1;
     if (open) {
       setFeedback(null);
+      setFlash(null);
       seenRef.current.clear();
       startCamera();
     } else {
       stopCamera();
+      setFlash(null);
       setCameraState("idle");
     }
     return () => {
@@ -478,6 +507,10 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
             Done
           </button>
         </div>
+
+        {/* Covers the whole scanner sheet for ~1s after every scan. Scanning
+            continues underneath; a tap anywhere dismisses it immediately. */}
+        <ScanFlash state={flash} onDone={() => setFlash(null)} />
       </div>
     </div>
   );

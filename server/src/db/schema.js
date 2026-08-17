@@ -33,6 +33,10 @@ export const SCHEMA_STATEMENTS = [
      updated_at    timestamptz NOT NULL DEFAULT now()
    )`,
 
+  // `role` is 'volunteer' (default) or 'officer'; officers are exempt from the
+  // per-event hours cap. ADD COLUMN keeps existing databases in sync.
+  `ALTER TABLE volunteers ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'volunteer'`,
+
   `CREATE TABLE IF NOT EXISTS events (
      id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
      name        text NOT NULL,
@@ -40,6 +44,15 @@ export const SCHEMA_STATEMENTS = [
      date        text NOT NULL,
      created_at  timestamptz NOT NULL DEFAULT now()
    )`,
+  // Scheduling + the hours cap. start/end are TEXT 'HH:MM' for the same reason
+  // dates are TEXT (the driver tz-shifts a real `time`), and are display-only —
+  // credited hours still come from the volunteer's OWN check-in/out timestamps.
+  // expected_hours is NULLABLE on purpose: NULL means "no cap set", which is
+  // what every pre-existing event has, so adding this column cannot change a
+  // single already-recorded hour.
+  `ALTER TABLE events ADD COLUMN IF NOT EXISTS start_time text NOT NULL DEFAULT ''`,
+  `ALTER TABLE events ADD COLUMN IF NOT EXISTS end_time text NOT NULL DEFAULT ''`,
+  `ALTER TABLE events ADD COLUMN IF NOT EXISTS expected_hours numeric`,
 
   `CREATE TABLE IF NOT EXISTS attendance (
      id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -59,6 +72,9 @@ export const SCHEMA_STATEMENTS = [
   // insertion order) even when many rows share the same created_at from a
   // batch insert. ADD COLUMN keeps existing databases in sync.
   `ALTER TABLE attendance ADD COLUMN IF NOT EXISTS seq bigserial`,
+  // Conduct strikes an admin recorded against this volunteer AT THIS EVENT.
+  // 0 = clean. Purely a human judgement call; it never affects hours.
+  `ALTER TABLE attendance ADD COLUMN IF NOT EXISTS strikes integer NOT NULL DEFAULT 0`,
 
   `CREATE TABLE IF NOT EXISTS submissions (
      id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -74,6 +90,29 @@ export const SCHEMA_STATEMENTS = [
      comments          text NOT NULL DEFAULT '',
      submitted_at      timestamptz NOT NULL DEFAULT now(),
      UNIQUE (event_id, volunteer_name)
+   )`,
+
+  // The UNCAPPED checkout−checkin span. `hours` is what the volunteer is
+  // credited (capped for non-officers); keeping the raw figure lets the UI
+  // explain the difference instead of looking like a bug.
+  `ALTER TABLE submissions ADD COLUMN IF NOT EXISTS raw_hours numeric`,
+
+  // One-time data migrations that have already been applied (see
+  // data-migrations.js). Presence of the row is the guard — a migration must
+  // never re-run and undo an admin's later edit.
+  `CREATE TABLE IF NOT EXISTS app_migrations (
+     name       text PRIMARY KEY,
+     applied_at timestamptz NOT NULL DEFAULT now()
+   )`,
+
+  // Rows a destructive migration removed, kept verbatim as JSON so any purge is
+  // recoverable. Never read by the app — it exists purely so "delete" is not
+  // one-way.
+  `CREATE TABLE IF NOT EXISTS archived_records (
+     id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+     reason     text NOT NULL,
+     payload    jsonb NOT NULL,
+     created_at timestamptz NOT NULL DEFAULT now()
    )`,
 
   `CREATE INDEX IF NOT EXISTS attendance_event_idx ON attendance (event_id)`,
@@ -92,4 +131,14 @@ export const SEED_LOCK_KEY = 727401;
 
 export function formatVolunteerCode(n) {
   return "TCYA-" + String(n).padStart(4, "0");
+}
+
+// Conduct strikes are whole, non-negative and bounded, so a typo or a hostile
+// payload can't store an absurd value. Anything unparseable reads as 0 (=no
+// strike) — failing to the harmless value for the person being judged.
+export const MAX_STRIKES = 99;
+export function normalizeStrikes(value) {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, MAX_STRIKES);
 }

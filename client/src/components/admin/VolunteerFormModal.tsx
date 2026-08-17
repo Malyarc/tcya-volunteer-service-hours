@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Volunteer } from "../../types";
+import type { Volunteer, VolunteerRole } from "../../types";
 import { GRADES } from "../../data/events";
 import { createVolunteer, updateVolunteer } from "../../api";
 import { formatDisplayId } from "../../qr";
@@ -22,6 +22,7 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [grade, setGrade] = useState("");
+  const [role, setRole] = useState<VolunteerRole>("volunteer");
   const [fields, setFields] = useState<FieldRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -34,6 +35,7 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
     setEmail(volunteer?.email ?? "");
     setPhone(volunteer?.phone ?? "");
     setGrade(volunteer?.grade ?? "");
+    setRole(volunteer?.role === "officer" ? "officer" : "volunteer");
     setFields(
       volunteer
         ? Object.entries(volunteer.customFields || {}).map(([key, value]) => ({
@@ -84,6 +86,7 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
       email: email.trim(),
       phone: phone.trim(),
       grade: grade.trim(),
+      role,
       customFields,
     };
 
@@ -183,6 +186,24 @@ export function VolunteerFormModal({ open, volunteer, onClose, onSaved }: Props)
                   <option key={g} value={g}>{g} grade</option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="label" htmlFor="v-role">Role</label>
+              <select
+                id="v-role"
+                className="input"
+                value={role}
+                onChange={(e) => setRole(e.target.value === "officer" ? "officer" : "volunteer")}
+              >
+                <option value="volunteer">Volunteer</option>
+                <option value="officer">Officer</option>
+              </select>
+              <p className="mt-1.5 text-xs text-slate-500">
+                Officers get an <span className="font-semibold text-emerald-700">Officer</span>{" "}
+                badge and their hours are <strong>not</strong> capped at an event's
+                expected hours — their set-up and clean-up time counts in full.
+                Changing this re-calculates their existing hours.
+              </p>
             </div>
           </div>
 

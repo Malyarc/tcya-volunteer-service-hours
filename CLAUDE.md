@@ -22,6 +22,12 @@ Postgres** database.
   - `create-store.js` picks the backend from `DATABASE_URL`.
 - `server/src/routes.js` is the shared Express router (used by both entry points:
   `server/src/index.js` for EC2 and `netlify/functions/api/api.mjs` for Netlify).
+- **Hours derivation lives in ONE place**, `server/src/hours.js`
+  (`deriveSubmissionFields`), used by both stores and by all three reconcile
+  paths (one row / one event / one volunteer) so they cannot drift.
+  `server/src/roles.js` defines the two roles; `server/src/db/data-migrations.js`
+  holds the one-time, marker-guarded DATA migrations (officer promotion, purge
+  of former members' leftover records).
 - Frontend: `client/` (Vite + React + Tailwind). QR generation in `client/src/qr.ts`
   (payload + `formatDisplayId`). The ID **card** is drawn by one canvas renderer,
   `client/src/cardRenderer.ts`, which feeds the modal preview, PNG/copy, and the
@@ -49,6 +55,26 @@ Postgres** database.
    projection of attendance — there is NO public self-submit form. `GET
    /submissions` still serves these rows (roster/certificate/export read them).
    Call `reconcileSubmission` after every attendance mutation in BOTH stores.
+1b. **Credited hours are CAPPED for ordinary volunteers, never for officers.**
+   `hours = min(checkout − checkin, event.expectedHours)` when the event has
+   expected hours set; `volunteers.role = 'officer'` is exempt (officers set up
+   before and clean up after). `expectedHours = NULL` means no cap for anyone —
+   which is why every pre-existing event's hours were untouched when this
+   shipped. `submissions.raw_hours` keeps the uncapped span (admin-only).
+   Anything that changes an input to the derivation must RE-DERIVE the affected
+   rows: editing an event's name/date/expectedHours re-reconciles the whole
+   event; changing a volunteer's role/grade re-reconciles all of theirs.
+
+1c. **The Roster tab is exactly the Volunteers tab.** `buildSummaries` is
+   roster-DRIVEN — a submission whose `volunteerName` has no roster entry is
+   ignored. Never re-introduce "also add names found in submissions": that is
+   precisely how deleted members reappeared as Roster-only ghost rows. The
+   shared suite asserts `GET /roster` equals `GET /volunteers`.
+
+1d. **Strikes never touch hours.** `attendance.strikes` is a separate axis, a
+   human judgement call. It is read from attendance (not submissions) so a
+   strike stays visible even when the attendance row is incomplete.
+
 2. **Deleting an event (or removing a volunteer from one) deletes the derived
    submissions** so no orphaned "pending" rows linger in the roster.
    `submissions.event_id` has **no foreign key**; `deleteEvent` deletes the
@@ -85,12 +111,27 @@ npm run build --prefix client   # tsc -b && vite build
   fail-closed-admin test.
 - `server/test/store-parity.test.js` — runs the SAME suite against **live
   Postgres**, gated on `TEST_DATABASE_URL` (separate from `DATABASE_URL` so a
-  normal `npm test` never touches a real DB).
-- Client: `client/src/{utils,qr,volunteerExports}.test.ts`.
+  normal `npm test` never touches a real DB). Every test truncates all tables
+  (markers included) and boots a FRESH store, so each one re-runs the real cold
+  start: DDL + seed + data migrations. Also holds the Postgres-only migration
+  tests (marker guards, archive-before-purge).
+- Client: `client/src/{utils,qr,volunteerExports}.test.ts` — incl. the
+  roster==volunteers guard, strike aggregation and event grouping.
 
 **MANDATORY pre-deploy gate:** the default `npm test` is memory-only. Because the
-production data layer is Postgres, run the parity suite against a **dedicated
-throwaway** Neon DB before every deploy:
+production data layer is Postgres, run the parity suite before every deploy.
+The easiest and safest target is the bundled LOCAL throwaway stack (a
+`postgres:17` container behind a Neon-HTTP proxy — the driver speaks Neon's
+SQL-over-HTTP, not the Postgres wire protocol, so the proxy is required):
+
+```bash
+cd server && docker compose -f test/docker-compose.parity.yml up -d
+TEST_DATABASE_URL='postgres://postgres:postgres@db.localtest.me:5432/scratchdb' \
+  TEST_NEON_HTTP_PROXY=1 npm test
+docker compose -f test/docker-compose.parity.yml down -v
+```
+
+A dedicated throwaway Neon branch works too:
 
 ```bash
 cd server && TEST_DATABASE_URL='postgres://…-test…/scratchdb' npm test

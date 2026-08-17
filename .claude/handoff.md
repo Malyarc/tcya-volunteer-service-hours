@@ -1,8 +1,119 @@
 # Handoff — ELA TCYA Volunteer Service Hours
 
-Single source of truth for the project's current state. Last updated: 2026-08-14.
+Single source of truth for the project's current state. Last updated: 2026-08-16.
 
-## Round 6 (latest) — Avery 74461 badge sheet + brand-logo fix
+## Round 7 (latest) — officers + hours cap, strikes, Events redesign, scan flash
+
+Five chapter-requested features, shipped in ONE commit (Netlify bills per build).
+Green bar: server memory **91 pass**, **live-Postgres parity 156 pass**, client
+**45 pass**, build clean. Verified live in the running app at 390 / 640 / 768 /
+1280 px.
+
+### 1. Big animated check + chime on every scan
+
+`components/admin/ScanFlash.tsx` takes over the whole scanner sheet for ~1s
+after each scan: a pop-in green disc with a drawn checkmark, the volunteer's
+NAME as the headline, and "Checked in · 3:45 PM" beneath. Tap anywhere to
+fast-forward; scanning continues underneath the whole time. Amber for
+"already checked in", red X for a failure. Badge is `clamp(120px, 40vmin,
+240px)` so it is correctly proportioned on phone/tablet/desktop with no media
+queries; honours `prefers-reduced-motion`; `role="status"` + `aria-live`. The
+beep was replaced by a two-note rising chime (`playScanTone`).
+
+### 2. Roster tab == Volunteers tab, permanently
+
+Root cause found: `buildSummaries` seeded its map from the roster AND from
+submission names, so any volunteer deleted from the roster whose hours stayed
+behind reappeared as a Roster-only ghost row. Prod had **5** such people
+(Erika Hsieh, Ethan de la Cruz, Jocelin Wang, Justin Lee, Xiqiao Ma —
+39.25 hrs). Two fixes, belt and braces:
+
+- `buildSummaries` is now strictly roster-DRIVEN (a submission with no roster
+  entry is ignored), so the two tabs can never diverge again;
+- a one-time migration **archived then deleted** those 5 people's leftover
+  attendance + submissions (the chapter asked for them to be fully removed).
+  The raw rows are recoverable verbatim from `archived_records`.
+
+The shared suite now asserts `GET /roster` is exactly `GET /volunteers`.
+
+### 3. Events page — one table per event type
+
+Events are grouped into a section per event name, each listing its dates, with
+columns **Date · Start · End · Expected Hrs · Checked In · Actions**. Groups
+with something upcoming float to the top (soonest first), then by most recent;
+same rule for dates inside a group. Each group header rolls up dates,
+check-ins, hours credited and the next date; sections collapse, and a custom
+"Others" event automatically gets its own section under its own name. A page
+header rolls up Event Types / Total Dates / Upcoming / Hours Credited, with
+search. **Every column is editable inline** (pencil → date/time/expected-hours
+inputs → Save) and the same fields are editable on the event's own page
+("Edit Details") and in the create-event form, in the same order.
+
+### 4. Conduct strikes
+
+- Event page: a **Strike** column per attendee — white when clean, red when
+  struck, one tap to toggle (`attendance.strikes`, an integer). Never affects
+  hours. The event's stat strip gained a Strikes total.
+- Roster: a **Strikes** column per volunteer plus a per-event Strikes column in
+  the expanded row. An event carrying a strike but no countable hours still
+  appears there, so a strike can never be invisible.
+- Volunteers tab: gained **Total Hours** and **# of Strikes** columns, and a
+  collapsible **"N volunteers with 3+ strikes"** watchlist table above the
+  roster (hidden entirely when nobody qualifies).
+
+### 5. Officers + the per-event hours cap
+
+- New `volunteers.role` (`volunteer` | `officer`), editable in the volunteer
+  form, with a light-green **Officer** badge beside the name on the Roster, the
+  Volunteers tab, the watchlist and event attendance lists.
+- New `events.expected_hours` (nullable). An ordinary volunteer is credited
+  `min(checkout − checkin, expected_hours)`; **officers are never capped**
+  because their set-up/clean-up time is genuine service. No expected hours set
+  ⇒ no cap for anyone.
+- `submissions.raw_hours` keeps the uncapped span, so the roster can show a
+  "capped" marker instead of looking like a rounding bug (admin-only).
+- Changing an event's expected hours, name or date **re-derives every
+  attendee's credited hours**; changing a volunteer's role or grade re-derives
+  all of theirs. Both stores implement this via one shared
+  `deriveSubmissionFields`.
+- The 12 confirmed officers were promoted by a one-time migration.
+
+### Data safety
+
+Every existing event has `expected_hours = NULL`, so **adding the cap changed
+zero already-recorded hours**. The only deletion is the 5 former members the
+chapter asked to remove, and it archives before it deletes. Migrations are
+marker-guarded in `app_migrations`: they apply once per database and a re-run
+can never undo a later admin edit (proved by a Postgres-only test that demotes
+an officer and cold-boots again).
+
+### The parity gate is now runnable locally
+
+`server/test/docker-compose.parity.yml` brings up a throwaway `postgres:17` +
+a Neon HTTP proxy, so the MANDATORY live-Postgres parity suite runs with no
+cloud database and zero chance of pointing at production:
+
+```bash
+cd server && docker compose -f test/docker-compose.parity.yml up -d
+TEST_DATABASE_URL='postgres://postgres:postgres@db.localtest.me:5432/scratchdb' \
+  TEST_NEON_HTTP_PROXY=1 npm test
+```
+
+Each parity test now truncates everything (including the migration markers) and
+boots a FRESH store, so every test exercises the real cold-start path — DDL,
+seed and data migrations included.
+
+### Also in this round
+
+- `SEED_VOLUNTEERS` regenerated from the live 65-name roster (it was still the
+  48 go-live names and would have re-seeded the 5 removed members into a fresh
+  database). Only ever used to seed an EMPTY table; prod is untouched.
+- Excel exports carry the new fields: the roster sheet gained **Role**, the
+  hours report's Summary sheet gained **Role** and **Strikes**.
+- Fixed: leaving an event page now refreshes the derived hours (the roster used
+  to show stale totals until the next tab switch).
+
+## Round 6 — Avery 74461 badge sheet + brand-logo fix
 
 Two chapter-requested changes. Frontend-only (no DB / API / schema change);
 green bar passing, verified live in the running app.

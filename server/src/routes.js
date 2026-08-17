@@ -5,6 +5,8 @@
 
 import express from "express";
 import crypto from "crypto";
+import { VOLUNTEER_ROLES, normalizeRole } from "./roles.js";
+import { MAX_STRIKES } from "./db/schema.js";
 
 function constantTimeEqual(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
@@ -14,6 +16,32 @@ function constantTimeEqual(a, b) {
 
 function isValidDate(d) {
   return typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
+}
+
+// Event start/end are wall-clock 'HH:MM' strings (or "" for not set). They are
+// scheduling metadata only — credited hours still come from each volunteer's
+// own check-in/out timestamps, never from these.
+function isValidClock(t) {
+  return typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+}
+function parseClockField(v) {
+  if (v === null || v === "") return "";
+  if (isValidClock(v)) return v;
+  return undefined; // invalid → caller reports an error
+}
+
+// Expected Volunteer Hours: a non-negative number, or null for "no cap".
+function parseExpectedHours(v) {
+  if (v === null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > 24) return undefined; // invalid
+  return n;
+}
+
+function parseStrikes(v) {
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > MAX_STRIKES) return undefined;
+  return n;
 }
 
 function normalizeIsoOrNull(v) {
@@ -47,6 +75,9 @@ function sanitizeCustomFields(v) {
 // volunteer QR `code` is a check-in credential, and volunteer ids + check-in/out
 // timestamps are internal — none belong in the anonymous GET /events response.
 // Admin callers get the full objects.
+// `role` and `strikes` ARE included: the chapter wants the Officer badge and a
+// volunteer's own strike count visible on the passcode-gated roster page. They
+// carry no contact info, no ID and no clock times.
 function publicEvent(event) {
   return {
     ...event,
@@ -55,6 +86,8 @@ function publicEvent(event) {
       staffCheckin: a.staffCheckin,
       volunteerCheckout: a.volunteerCheckout,
       selfAdded: a.selfAdded,
+      role: a.role,
+      strikes: a.strikes,
     })),
   };
 }
@@ -202,7 +235,15 @@ export function createRouter({
   router.get("/roster", async (_req, res) => {
     try {
       const vols = await store.listVolunteers();
-      res.json(vols.map((v) => ({ name: v.name, grade: v.grade || "" })));
+      // Names, grade and role only — role drives the Officer badge and carries
+      // no personal information beyond what the roster already shows.
+      res.json(
+        vols.map((v) => ({
+          name: v.name,
+          grade: v.grade || "",
+          role: normalizeRole(v.role),
+        }))
+      );
     } catch (err) {
       console.error("Failed to read roster", err);
       res.status(500).json({ error: "Failed to read roster" });
@@ -242,6 +283,7 @@ export function createRouter({
         email: trimStr(body.email, 200),
         phone: trimStr(body.phone, 60),
         grade: trimStr(body.grade, 40),
+        role: normalizeRole(body.role),
         customFields: sanitizeCustomFields(body.customFields),
       });
       res.status(201).json(volunteer);
@@ -262,6 +304,16 @@ export function createRouter({
     if (body.email !== undefined) patch.email = trimStr(body.email, 200);
     if (body.phone !== undefined) patch.phone = trimStr(body.phone, 60);
     if (body.grade !== undefined) patch.grade = trimStr(body.grade, 40);
+    if (body.role !== undefined) {
+      // Reject an unrecognized role loudly rather than silently demoting an
+      // officer to the default — a typo must not quietly re-apply the hours cap.
+      if (!VOLUNTEER_ROLES.includes(String(body.role))) {
+        return res.status(400).json({
+          error: `role must be one of: ${VOLUNTEER_ROLES.join(", ")}`,
+        });
+      }
+      patch.role = normalizeRole(body.role);
+    }
     if (body.active !== undefined) patch.active = Boolean(body.active);
     if (body.customFields !== undefined)
       patch.customFields = sanitizeCustomFields(body.customFields);
@@ -339,7 +391,8 @@ export function createRouter({
   });
 
   router.post("/events", requireAdmin, async (req, res) => {
-    const { name, customName, date } = req.body || {};
+    const body = req.body || {};
+    const { name, customName, date } = body;
     const errors = [];
     if (!name || typeof name !== "string") errors.push("name is required");
     if (!isValidDate(date)) errors.push("date must be YYYY-MM-DD");
@@ -349,6 +402,14 @@ export function createRouter({
     ) {
       errors.push("customName is required when name is 'Others'");
     }
+    const startTime = body.startTime === undefined ? "" : parseClockField(body.startTime);
+    const endTime = body.endTime === undefined ? "" : parseClockField(body.endTime);
+    const expectedHours =
+      body.expectedHours === undefined ? null : parseExpectedHours(body.expectedHours);
+    if (startTime === undefined) errors.push("startTime must be HH:MM");
+    if (endTime === undefined) errors.push("endTime must be HH:MM");
+    if (expectedHours === undefined)
+      errors.push("expectedHours must be a number between 0 and 24");
     if (errors.length > 0) return res.status(400).json({ errors });
 
     try {
@@ -357,11 +418,64 @@ export function createRouter({
         customName:
           name === "Others - please specify" ? String(customName).trim() : null,
         date,
+        startTime,
+        endTime,
+        expectedHours,
       });
       res.status(201).json(event);
     } catch (err) {
       console.error("Failed to create event", err);
       res.status(500).json({ error: "Failed to create event" });
+    }
+  });
+
+  // Edit an event. Only the keys PRESENT in the body change; the store
+  // re-derives every submission for the event afterwards, because the name and
+  // date are copied into them and expectedHours caps the credited hours.
+  router.patch("/events/:id", requireAdmin, async (req, res) => {
+    const body = req.body || {};
+    const patch = {};
+    const errors = [];
+
+    if (body.name !== undefined) {
+      const name = trimStr(body.name, 200);
+      if (!name) errors.push("name cannot be empty");
+      else patch.name = name;
+    }
+    if (body.customName !== undefined) {
+      patch.customName = body.customName === null ? null : trimStr(body.customName, 200) || null;
+    }
+    if (body.date !== undefined) {
+      if (!isValidDate(body.date)) errors.push("date must be YYYY-MM-DD");
+      else patch.date = body.date;
+    }
+    if (body.startTime !== undefined) {
+      const v = parseClockField(body.startTime);
+      if (v === undefined) errors.push("startTime must be HH:MM");
+      else patch.startTime = v;
+    }
+    if (body.endTime !== undefined) {
+      const v = parseClockField(body.endTime);
+      if (v === undefined) errors.push("endTime must be HH:MM");
+      else patch.endTime = v;
+    }
+    if (body.expectedHours !== undefined) {
+      const v = parseExpectedHours(body.expectedHours);
+      if (v === undefined) errors.push("expectedHours must be a number between 0 and 24");
+      else patch.expectedHours = v;
+    }
+    if (errors.length > 0) return res.status(400).json({ errors });
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: "No editable fields were provided" });
+    }
+
+    try {
+      const event = await store.updateEvent(req.params.id, patch);
+      if (!event) return res.status(404).json({ error: "Event not found" });
+      res.json(event);
+    } catch (err) {
+      console.error("Failed to update event", err);
+      res.status(500).json({ error: "Failed to update event" });
     }
   });
 
@@ -410,6 +524,17 @@ export function createRouter({
     if ("checkoutAt" in body) {
       const v = normalizeIsoOrNull(body.checkoutAt);
       if (v !== undefined) patch.checkoutAt = v;
+    }
+    // Conduct strikes for this volunteer AT THIS EVENT. Rejected loudly when
+    // malformed so a bad value can never silently clear a recorded strike.
+    if (body.strikes !== undefined) {
+      const v = parseStrikes(body.strikes);
+      if (v === undefined) {
+        return res
+          .status(400)
+          .json({ error: `strikes must be a whole number between 0 and ${MAX_STRIKES}` });
+      }
+      patch.strikes = v;
     }
 
     try {

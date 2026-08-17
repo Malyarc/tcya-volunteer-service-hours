@@ -7,9 +7,17 @@
 // matches the Postgres store's `ORDER BY created_at ASC`.
 
 import crypto from "crypto";
-import { formatVolunteerCode } from "./schema.js";
+import { formatVolunteerCode, normalizeStrikes } from "./schema.js";
 import { SEED_VOLUNTEERS } from "../data/seed-volunteers.js";
-import { hoursBetween, localHHMM, isComplete } from "../hours.js";
+import { deriveSubmissionFields, normalizeExpectedHours } from "../hours.js";
+import { ROLE_OFFICER, ROLE_VOLUNTEER, normalizeRole } from "../roles.js";
+import {
+  ARCHIVE_REASON_RETIRED,
+  MIGRATION_PROMOTE_OFFICERS,
+  MIGRATION_PURGE_RETIRED,
+  OFFICER_NAMES,
+  RETIRED_MEMBER_NAMES,
+} from "./data-migrations.js";
 
 const nowIso = () => new Date().toISOString();
 
@@ -18,6 +26,8 @@ export function createMemoryStore(seed) {
   let events = [];
   let attendance = [];
   let submissions = [];
+  let archivedRecords = [];
+  const appliedMigrations = new Set();
   let codeSeq = 0;
   let insertSeq = 0;
 
@@ -33,8 +43,16 @@ export function createMemoryStore(seed) {
       volunteers.push(makeVolunteer({ name }));
     }
   } else if (seed) {
-    volunteers = (seed.volunteers || []).map((v) => ({ ...v }));
-    events = (seed.events || []).map((e) => ({ ...e }));
+    volunteers = (seed.volunteers || []).map((v) => ({
+      ...v,
+      role: normalizeRole(v.role),
+    }));
+    events = (seed.events || []).map((e) => ({
+      ...e,
+      startTime: e.startTime || "",
+      endTime: e.endTime || "",
+      expectedHours: normalizeExpectedHours(e.expectedHours),
+    }));
     submissions = (seed.submissions || []).map((s) => ({ ...s }));
     // A seed may express attendance inline on events (old shape) — flatten it.
     for (const e of events) {
@@ -50,6 +68,7 @@ export function createMemoryStore(seed) {
           volunteerCheckout: !!a.volunteerCheckout,
           checkoutAt: a.checkoutAt ?? null,
           selfAdded: !!a.selfAdded,
+          strikes: normalizeStrikes(a.strikes),
         });
       }
       delete e.attendance;
@@ -62,6 +81,7 @@ export function createMemoryStore(seed) {
     email = "",
     phone = "",
     grade = "",
+    role = ROLE_VOLUNTEER,
     customFields = {},
   }) {
     const ts = nowIso();
@@ -72,6 +92,7 @@ export function createMemoryStore(seed) {
       email,
       phone,
       grade,
+      role: normalizeRole(role),
       customFields: { ...customFields },
       active: true,
       createdAt: ts,
@@ -92,15 +113,21 @@ export function createMemoryStore(seed) {
     const vol = a.volunteerId
       ? volunteers.find((v) => v.id === a.volunteerId)
       : null;
+    // The role shown on the attendance row follows the volunteer RECORD (by id,
+    // else by name), matching the Postgres store's join — so an officer badge
+    // and the uncapped hours they get can never disagree.
+    const byName = vol || pickVolunteerByName(a.volunteerName);
     return {
       volunteerName: a.volunteerName,
       volunteerId: a.volunteerId || null,
       code: vol ? vol.code : null,
+      role: byName ? normalizeRole(byName.role) : ROLE_VOLUNTEER,
       staffCheckin: !!a.staffCheckin,
       checkinAt: a.checkinAt ?? null,
       volunteerCheckout: !!a.volunteerCheckout,
       checkoutAt: a.checkoutAt ?? null,
       selfAdded: !!a.selfAdded,
+      strikes: normalizeStrikes(a.strikes),
     };
   }
 
@@ -114,9 +141,27 @@ export function createMemoryStore(seed) {
       name: e.name,
       customName: e.customName || null,
       date: e.date,
+      startTime: e.startTime || "",
+      endTime: e.endTime || "",
+      expectedHours: e.expectedHours ?? null,
       createdAt: e.createdAt,
       attendance: rows,
     };
+  }
+
+  // Deterministic pick on duplicate names — matches the Postgres store's
+  // `ORDER BY created_at ASC, code ASC LIMIT 1`, so the grade, role and
+  // therefore the hours cap resolve identically in both stores.
+  function pickVolunteerByName(name) {
+    return volunteers
+      .filter((v) => v.name === name)
+      .sort((a, b) =>
+        a.createdAt < b.createdAt
+          ? -1
+          : a.createdAt > b.createdAt
+            ? 1
+            : a.code.localeCompare(b.code)
+      )[0];
   }
 
   function findAtt(eventId, volunteerName) {
@@ -126,7 +171,12 @@ export function createMemoryStore(seed) {
   }
 
   function insertAtt(row) {
-    attendance.push({ id: crypto.randomUUID(), _seq: (insertSeq += 1), ...row });
+    attendance.push({
+      id: crypto.randomUUID(),
+      _seq: (insertSeq += 1),
+      strikes: 0,
+      ...row,
+    });
   }
 
   // Keep the volunteer's submission for this event in sync with their
@@ -140,26 +190,20 @@ export function createMemoryStore(seed) {
     const idx = submissions.findIndex(
       (s) => s.eventId === eventId && s.volunteerName === volunteerName
     );
-    if (!ev || !row || !isComplete(row.checkinAt, row.checkoutAt)) {
+    const derived = row
+      ? deriveSubmissionFields({
+          checkinAt: row.checkinAt,
+          checkoutAt: row.checkoutAt,
+          event: ev,
+          volunteer: pickVolunteerByName(volunteerName),
+        })
+      : null;
+    if (!derived) {
       if (idx >= 0) submissions.splice(idx, 1);
       return;
     }
-    const hrs = hoursBetween(row.checkinAt, row.checkoutAt);
-    // Deterministic pick on duplicate names (matches Postgres ORDER BY
-    // created_at LIMIT 1) so the derived grade never diverges between stores.
-    const vol = volunteers
-      .filter((v) => v.name === volunteerName)
-      .sort((a, b) =>
-        a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.code.localeCompare(b.code)
-      )[0];
     const fields = {
-      grade: vol?.grade || "",
-      eventName: ev.customName ? ev.customName : ev.name,
-      customEventName: ev.customName || null,
-      eventDate: ev.date,
-      arrivalTime: localHHMM(row.checkinAt),
-      endTime: localHHMM(row.checkoutAt),
-      hours: hrs,
+      ...derived,
       comments: idx >= 0 ? submissions[idx].comments : "",
       submittedAt: nowIso(),
     };
@@ -171,6 +215,34 @@ export function createMemoryStore(seed) {
         volunteerName,
         ...fields,
       });
+  }
+
+  // Re-derive EVERY submission of one event. Needed whenever a property the
+  // submissions copy from the event changes — its name, date, or (crucially)
+  // its Expected Volunteer Hours, which is the cap on non-officers' credit.
+  function reconcileEvent(eventId) {
+    for (const name of attendance
+      .filter((a) => a.eventId === eventId)
+      .map((a) => a.volunteerName)) {
+      reconcileSubmission(eventId, name);
+    }
+    // Drop submissions whose attendance row is gone entirely.
+    submissions = submissions.filter(
+      (s) => s.eventId !== eventId || findAtt(eventId, s.volunteerName)
+    );
+  }
+
+  // Re-derive every event this person has hours for. Needed when their ROLE
+  // changes (officer ⇄ volunteer flips the cap on/off) or their grade changes
+  // (submissions carry a copy of it).
+  function reconcileVolunteerName(volunteerName) {
+    for (const eventId of new Set(
+      attendance
+        .filter((a) => a.volunteerName === volunteerName)
+        .map((a) => a.eventId)
+    )) {
+      reconcileSubmission(eventId, volunteerName);
+    }
   }
 
   // ---------- volunteers ----------
@@ -253,10 +325,14 @@ export function createMemoryStore(seed) {
       }
     }
 
+    const oldRole = v.role;
+    const oldGrade = v.grade;
+
     if (patch.name !== undefined) v.name = patch.name;
     if (patch.email !== undefined) v.email = patch.email;
     if (patch.phone !== undefined) v.phone = patch.phone;
     if (patch.grade !== undefined) v.grade = patch.grade;
+    if (patch.role !== undefined) v.role = normalizeRole(patch.role);
     if (patch.customFields !== undefined)
       v.customFields = { ...patch.customFields };
     if (patch.active !== undefined) v.active = patch.active;
@@ -271,6 +347,12 @@ export function createMemoryStore(seed) {
       for (const s of submissions) {
         if (s.volunteerName === oldName) s.volunteerName = newName;
       }
+    }
+    // Promoting to officer lifts the per-event cap (and demoting re-applies
+    // it), and submissions carry a copy of the grade — so either change has to
+    // re-derive this person's existing hours, not just future ones.
+    if (v.role !== oldRole || v.grade !== oldGrade) {
+      reconcileVolunteerName(v.name);
     }
     return cloneVolunteer(v);
   }
@@ -301,15 +383,43 @@ export function createMemoryStore(seed) {
     return e ? assembleEvent(e) : null;
   }
 
-  async function createEvent({ name, customName = null, date }) {
+  async function createEvent({
+    name,
+    customName = null,
+    date,
+    startTime = "",
+    endTime = "",
+    expectedHours = null,
+  }) {
     const e = {
       id: crypto.randomUUID(),
       name,
       customName: customName || null,
       date,
+      startTime: startTime || "",
+      endTime: endTime || "",
+      expectedHours: normalizeExpectedHours(expectedHours),
       createdAt: nowIso(),
     };
     events.push(e);
+    return assembleEvent(e);
+  }
+
+  // Edit an event in place. Every field here is copied into the derived
+  // submissions (name/date) or governs them (expectedHours ⇒ the cap), so the
+  // whole event is re-derived afterwards — an admin lowering the expected hours
+  // must immediately correct everyone's already-credited hours.
+  async function updateEvent(id, patch) {
+    const e = events.find((x) => x.id === id);
+    if (!e) return null;
+    if (patch.name !== undefined) e.name = patch.name;
+    if (patch.customName !== undefined) e.customName = patch.customName || null;
+    if (patch.date !== undefined) e.date = patch.date;
+    if (patch.startTime !== undefined) e.startTime = patch.startTime || "";
+    if (patch.endTime !== undefined) e.endTime = patch.endTime || "";
+    if (patch.expectedHours !== undefined)
+      e.expectedHours = normalizeExpectedHours(patch.expectedHours);
+    reconcileEvent(id);
     return assembleEvent(e);
   }
 
@@ -465,6 +575,8 @@ export function createMemoryStore(seed) {
     row.volunteerCheckout = volunteerCheckout;
     row.checkinAt = checkinAt ?? null;
     row.checkoutAt = checkoutAt ?? null;
+    // Conduct strikes are independent of the times and never touch hours.
+    if (patch.strikes !== undefined) row.strikes = normalizeStrikes(patch.strikes);
     reconcileSubmission(eventId, volunteerName);
     return getEvent(eventId);
   }
@@ -531,6 +643,7 @@ export function createMemoryStore(seed) {
         email: v.email || "",
         phone: v.phone || "",
         grade: v.grade || "",
+        role: normalizeRole(v.role),
         customFields: { ...(v.customFields || {}) },
         active: v.active !== false,
         createdAt: v.createdAt || nowIso(),
@@ -554,6 +667,9 @@ export function createMemoryStore(seed) {
         name: e.name || "",
         customName: e.customName ?? null,
         date: e.date || "",
+        startTime: e.startTime || "",
+        endTime: e.endTime || "",
+        expectedHours: normalizeExpectedHours(e.expectedHours),
         createdAt: e.createdAt || nowIso(),
       });
       for (const a of Array.isArray(e.attendance) ? e.attendance : []) {
@@ -568,6 +684,7 @@ export function createMemoryStore(seed) {
           volunteerCheckout: !!a.volunteerCheckout,
           checkoutAt: a.checkoutAt ?? null,
           selfAdded: !!a.selfAdded,
+          strikes: normalizeStrikes(a.strikes),
         });
       }
     }
@@ -599,6 +716,7 @@ export function createMemoryStore(seed) {
         arrivalTime: s.arrivalTime || "",
         endTime: s.endTime || "",
         hours: Number(s.hours) || 0,
+        rawHours: s.rawHours == null ? Number(s.hours) || 0 : Number(s.rawHours) || 0,
         comments: s.comments || "",
         submittedAt: s.submittedAt || nowIso(),
       });
@@ -606,8 +724,51 @@ export function createMemoryStore(seed) {
     return exportAll();
   }
 
+  // ---------- one-time data migrations (see data-migrations.js) ----------
+
+  // Mirrors the Postgres store statement-for-statement in EFFECT: each
+  // migration applies at most once (guarded by `appliedMigrations`), skips
+  // names that aren't present, and archives before it deletes.
+  function runDataMigrations() {
+    if (!appliedMigrations.has(MIGRATION_PROMOTE_OFFICERS)) {
+      const officers = new Set(OFFICER_NAMES);
+      for (const v of volunteers) {
+        if (officers.has(v.name) && v.role !== ROLE_OFFICER) {
+          v.role = ROLE_OFFICER;
+          v.updatedAt = nowIso();
+        }
+      }
+      appliedMigrations.add(MIGRATION_PROMOTE_OFFICERS);
+    }
+
+    if (!appliedMigrations.has(MIGRATION_PURGE_RETIRED)) {
+      const retired = new Set(RETIRED_MEMBER_NAMES);
+      // Only rows whose name has NO volunteer record — re-adding any of these
+      // people to the roster makes their data untouchable by this migration.
+      const orphaned = (n) => retired.has(n) && !volunteers.some((v) => v.name === n);
+      const doomedAtt = attendance.filter((a) => orphaned(a.volunteerName));
+      const doomedSubs = submissions.filter((s) => orphaned(s.volunteerName));
+      if (doomedAtt.length > 0 || doomedSubs.length > 0) {
+        archivedRecords.push({
+          id: crypto.randomUUID(),
+          reason: ARCHIVE_REASON_RETIRED,
+          payload: {
+            attendance: doomedAtt.map((a) => ({ ...a })),
+            submissions: doomedSubs.map((s) => ({ ...s })),
+          },
+          createdAt: nowIso(),
+        });
+        attendance = attendance.filter((a) => !orphaned(a.volunteerName));
+        submissions = submissions.filter((s) => !orphaned(s.volunteerName));
+      }
+      appliedMigrations.add(MIGRATION_PURGE_RETIRED);
+    }
+  }
+
+  runDataMigrations();
+
   async function ensureReady() {
-    /* no-op for memory */
+    /* schema + data migrations already ran at construction */
   }
 
   // Liveness probe for /health. The in-memory store is always "reachable" — the
@@ -630,6 +791,7 @@ export function createMemoryStore(seed) {
     listEvents,
     getEvent,
     createEvent,
+    updateEvent,
     deleteEvent,
     addAttendees,
     checkInByCode,
@@ -649,3 +811,4 @@ function isUuid(v) {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
   );
 }
+

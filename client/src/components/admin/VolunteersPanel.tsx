@@ -9,9 +9,15 @@ import {
 import { VolunteerFormModal } from "./VolunteerFormModal";
 import { VolunteerQRModal } from "./VolunteerQRModal";
 import { Avatar } from "../Avatar";
+import { RoleBadge, StrikeCount } from "../RoleBadge";
+import { STRIKE_WATCHLIST_THRESHOLD, formatHours } from "../../utils";
+import type { VolunteerSummary } from "../../utils";
 
 interface Props {
   volunteers: Volunteer[];
+  // Hours + strikes come from the same summaries the Roster tab renders, so the
+  // two tabs can never disagree about a volunteer's totals.
+  summaries: VolunteerSummary[];
   // True until the first volunteers fetch resolves, so we don't flash the
   // "No volunteers yet" empty state (which reads as "the roster got wiped").
   loading?: boolean;
@@ -21,13 +27,36 @@ interface Props {
   onToast: (msg: string) => void;
 }
 
-export function VolunteersPanel({ volunteers, loading = false, onChanged, onToast }: Props) {
+export function VolunteersPanel({
+  volunteers,
+  summaries,
+  loading = false,
+  onChanged,
+  onToast,
+}: Props) {
   const [query, setQuery] = useState("");
+  const [watchlistOpen, setWatchlistOpen] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Volunteer | null>(null);
   const [qrVolunteer, setQrVolunteer] = useState<Volunteer | null>(null);
   const [busyBulk, setBusyBulk] = useState<null | "pdf" | "xlsx">(null);
   const [error, setError] = useState<string | null>(null);
+
+  const statsByName = useMemo(() => {
+    const m = new Map<string, VolunteerSummary>();
+    for (const s of summaries) m.set(s.name, s);
+    return m;
+  }, [summaries]);
+
+  // Everyone at or over the chapter's review threshold, worst first.
+  const watchlist = useMemo(
+    () =>
+      volunteers
+        .map((v) => ({ v, strikes: statsByName.get(v.name)?.totalStrikes ?? 0 }))
+        .filter((row) => row.strikes >= STRIKE_WATCHLIST_THRESHOLD)
+        .sort((a, b) => b.strikes - a.strikes || a.v.name.localeCompare(b.v.name)),
+    [volunteers, statsByName]
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -85,6 +114,84 @@ export function VolunteersPanel({ volunteers, loading = false, onChanged, onToas
   }
 
   return (
+    <div className="space-y-4">
+      {/* Sits ABOVE the roster so anyone at the review threshold is the first
+          thing an admin sees. Collapsible — it is a standing list, not an alert
+          that needs dismissing — and it disappears entirely when nobody
+          qualifies, so a clean chapter sees no scolding banner. */}
+      {watchlist.length > 0 && (
+        <section className="card overflow-hidden border-red-200">
+          <button
+            type="button"
+            onClick={() => setWatchlistOpen((v) => !v)}
+            aria-expanded={watchlistOpen}
+            className="flex w-full items-center gap-3 bg-red-50/70 px-5 py-3.5 text-left transition hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-red-400"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={`h-4 w-4 flex-none text-red-400 transition-transform ${watchlistOpen ? "rotate-90" : ""}`}>
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+            <span className="flex h-7 w-7 flex-none items-center justify-center rounded-full bg-red-100 text-red-700">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-4 w-4">
+                <path d="M12 9v4M12 17h.01" />
+                <path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+              </svg>
+            </span>
+            <div className="min-w-0 flex-1">
+              <h2 className="font-semibold text-red-900">
+                {watchlist.length} volunteer{watchlist.length === 1 ? "" : "s"} with{" "}
+                {STRIKE_WATCHLIST_THRESHOLD}+ strikes
+              </h2>
+              <p className="text-xs text-red-700/80">
+                Cumulative across every event. Needs a chapter decision.
+              </p>
+            </div>
+          </button>
+
+          {watchlistOpen && (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-red-100">
+                <thead className="bg-red-50/40">
+                  <tr>
+                    <Th className="text-red-800">Volunteer</Th>
+                    <Th className="text-red-800">ID</Th>
+                    <Th className="hidden text-red-800 sm:table-cell">Grade</Th>
+                    <Th className="text-right text-red-800">Total Hours</Th>
+                    <Th className="text-center text-red-800">Strikes</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-red-100 bg-white">
+                  {watchlist.map(({ v, strikes }) => (
+                    <tr key={v.id} className="hover:bg-red-50/40">
+                      <td className="whitespace-nowrap px-5 py-2.5">
+                        <div className="flex items-center gap-3">
+                          <Avatar name={v.name} />
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-medium text-slate-900">{v.name}</span>
+                            <RoleBadge role={v.role} size="sm" />
+                          </div>
+                        </div>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-sm font-medium text-brand-700">
+                        {formatDisplayId(v.code)}
+                      </td>
+                      <td className="hidden whitespace-nowrap px-4 py-2.5 text-sm text-slate-600 sm:table-cell">
+                        {v.grade || "—"}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-right text-sm tabular-nums text-slate-700">
+                        {formatHours(statsByName.get(v.name)?.totalHours ?? 0)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2.5 text-center">
+                        <StrikeCount count={strikes} threshold={STRIKE_WATCHLIST_THRESHOLD} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
     <section className="card overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
         <div>
@@ -153,13 +260,17 @@ export function VolunteersPanel({ volunteers, loading = false, onChanged, onToas
               <Th>Volunteer</Th>
               <Th>ID</Th>
               <Th className="hidden md:table-cell">Grade</Th>
+              <Th className="text-right">Total Hours</Th>
+              <Th className="text-center" title="Cumulative strikes across every event">
+                # of Strikes
+              </Th>
               <Th className="text-right">QR / Actions</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-5 py-10 text-center text-sm text-slate-500">
+                <td colSpan={6} className="px-5 py-10 text-center text-sm text-slate-500">
                   {loading && volunteers.length === 0
                     ? "Loading volunteers…"
                     : volunteers.length === 0
@@ -173,7 +284,10 @@ export function VolunteersPanel({ volunteers, loading = false, onChanged, onToas
                   <td className="whitespace-nowrap px-5 py-3">
                     <div className="flex items-center gap-3">
                       <Avatar name={v.name} />
-                      <div className="font-medium text-slate-900">{v.name}</div>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-medium text-slate-900">{v.name}</span>
+                        <RoleBadge role={v.role} size="sm" />
+                      </div>
                     </div>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-brand-700">
@@ -181,6 +295,15 @@ export function VolunteersPanel({ volunteers, loading = false, onChanged, onToas
                   </td>
                   <td className="hidden md:table-cell whitespace-nowrap px-4 py-3 text-sm text-slate-600">
                     {v.grade || "—"}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-right text-sm font-medium tabular-nums text-brand-700">
+                    {formatHours(statsByName.get(v.name)?.totalHours ?? 0)}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-center">
+                    <StrikeCount
+                      count={statsByName.get(v.name)?.totalStrikes ?? 0}
+                      threshold={STRIKE_WATCHLIST_THRESHOLD}
+                    />
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-1">
@@ -229,16 +352,29 @@ export function VolunteersPanel({ volunteers, loading = false, onChanged, onToas
       />
       <VolunteerQRModal volunteer={qrVolunteer} onClose={() => setQrVolunteer(null)} />
     </section>
+    </div>
   );
 }
 
-function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+function Th({
+  children,
+  className = "",
+  title,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  title?: string;
+}) {
   return (
-    <th className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 ${className}`}>
+    <th
+      title={title}
+      className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 ${className}`}
+    >
       {children}
     </th>
   );
 }
+
 
 function IconBtn({
   onClick,

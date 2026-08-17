@@ -13,6 +13,7 @@ function vol(over: Partial<Volunteer> = {}): Volunteer {
     name: over.name ?? "Aaron Tse",
     email: over.email ?? "",
     phone: over.phone ?? "",
+    role: over.role ?? "volunteer",
     grade: over.grade ?? "",
     customFields: over.customFields ?? {},
     active: over.active ?? true,
@@ -118,5 +119,17 @@ describe("avery74461Placements — fills each Avery 74461 cell edge-to-edge", ()
 
   it("returns nothing for an empty roster", () => {
     expect(avery74461Placements(0)).toEqual([]);
+  });
+});
+
+describe("buildRosterSheetData — role column", () => {
+  it("labels officers and volunteers, right after the name", () => {
+    const { rows } = buildRosterSheetData([
+      vol({ name: "Chief", role: "officer" }),
+      vol({ name: "Helper" }),
+    ]);
+    expect(Object.keys(rows[0]).slice(0, 3)).toEqual(["ID", "Name", "Role"]);
+    expect(rows[0].Role).toBe("Officer");
+    expect(rows[1].Role).toBe("Volunteer");
   });
 });

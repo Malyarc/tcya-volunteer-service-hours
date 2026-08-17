@@ -1,3 +1,7 @@
+// Ordinary volunteers are capped at an event's expectedHours; officers are not
+// (they set up before and clean up after, and that time counts).
+export type VolunteerRole = "volunteer" | "officer";
+
 export interface Submission {
   id: string;
   eventId: string;
@@ -8,7 +12,10 @@ export interface Submission {
   eventDate: string; // YYYY-MM-DD (taken from the event)
   arrivalTime: string; // HH:MM
   endTime: string; // HH:MM
-  hours: number;
+  hours: number; // CREDITED hours (capped for non-officers)
+  // The uncapped checkout − checkin span. Admin-only: the public projection
+  // omits it, so treat it as optional.
+  rawHours?: number;
   comments: string;
   submittedAt: string; // ISO timestamp
 }
@@ -17,6 +24,7 @@ export interface AttendanceEntry {
   volunteerName: string;
   volunteerId?: string | null;
   code?: string | null;
+  role?: VolunteerRole;
   staffCheckin: boolean;
   checkinAt?: string | null; // ISO timestamp of staff check-in (QR or manual)
   volunteerCheckout: boolean;
@@ -24,6 +32,8 @@ export interface AttendanceEntry {
   // True when the volunteer submitted a form for this event but the admin
   // never pre-added them. These show at the bottom of the attendance list.
   selfAdded?: boolean;
+  // Conduct strikes recorded against this volunteer AT THIS EVENT. 0 = clean.
+  strikes?: number;
 }
 
 export interface VolunteerEvent {
@@ -31,6 +41,11 @@ export interface VolunteerEvent {
   name: string;
   customName: string | null;
   date: string; // YYYY-MM-DD
+  startTime: string; // HH:MM, "" when not set
+  endTime: string; // HH:MM, "" when not set
+  // Max hours an ordinary volunteer can be credited for this event. null = no
+  // cap (every event created before this feature existed).
+  expectedHours: number | null;
   createdAt: string;
   attendance: AttendanceEntry[];
 }
@@ -39,6 +54,18 @@ export interface NewEvent {
   name: string;
   customName?: string | null;
   date: string;
+  startTime?: string;
+  endTime?: string;
+  expectedHours?: number | null;
+}
+
+export interface EventPatch {
+  name?: string;
+  customName?: string | null;
+  date?: string;
+  startTime?: string;
+  endTime?: string;
+  expectedHours?: number | null;
 }
 
 // ---------- Volunteers (QR "ID card" records) ----------
@@ -50,6 +77,7 @@ export interface Volunteer {
   email: string;
   phone: string;
   grade: string;
+  role: VolunteerRole;
   customFields: Record<string, string>;
   active: boolean;
   createdAt: string;
@@ -61,6 +89,7 @@ export interface NewVolunteer {
   email?: string;
   phone?: string;
   grade?: string;
+  role?: VolunteerRole;
   customFields?: Record<string, string>;
 }
 
@@ -69,14 +98,16 @@ export interface VolunteerPatch {
   email?: string;
   phone?: string;
   grade?: string;
+  role?: VolunteerRole;
   active?: boolean;
   customFields?: Record<string, string>;
 }
 
-// Public roster entry — names + grade only, no contact info.
+// Public roster entry — names + grade + role only, no contact info.
 export interface RosterEntry {
   name: string;
   grade: string;
+  role?: VolunteerRole;
 }
 
 // Result of a QR scan check-in / check-out.

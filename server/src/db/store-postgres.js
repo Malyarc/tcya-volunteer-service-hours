@@ -9,9 +9,17 @@
 
 import crypto from "crypto";
 import { neon } from "@neondatabase/serverless";
-import { SCHEMA_STATEMENTS, SEED_LOCK_KEY } from "./schema.js";
+import { SCHEMA_STATEMENTS, SEED_LOCK_KEY, normalizeStrikes } from "./schema.js";
 import { SEED_VOLUNTEERS } from "../data/seed-volunteers.js";
-import { hoursBetween, localHHMM, isComplete } from "../hours.js";
+import { deriveSubmissionFields, normalizeExpectedHours } from "../hours.js";
+import { ROLE_OFFICER, normalizeRole } from "../roles.js";
+import {
+  ARCHIVE_REASON_RETIRED,
+  MIGRATION_PROMOTE_OFFICERS,
+  MIGRATION_PURGE_RETIRED,
+  OFFICER_NAMES,
+  RETIRED_MEMBER_NAMES,
+} from "./data-migrations.js";
 
 // ---------- row → API-shape mappers ----------
 
@@ -29,6 +37,7 @@ function mapVolunteer(r) {
     email: r.email || "",
     phone: r.phone || "",
     grade: r.grade || "",
+    role: normalizeRole(r.role),
     customFields:
       r.custom_fields && typeof r.custom_fields === "object"
         ? r.custom_fields
@@ -44,15 +53,20 @@ function mapAttendance(r) {
     volunteerName: r.volunteer_name,
     volunteerId: r.volunteer_id || null,
     code: r.v_code || null,
+    // Resolved from the linked volunteer record, else the name lookup — the
+    // memory store's `vol || pickVolunteerByName(...)` in SQL form.
+    role: normalizeRole(r.v_role),
     staffCheckin: !!r.staff_checkin,
     checkinAt: toIso(r.checkin_at),
     volunteerCheckout: !!r.volunteer_checkout,
     checkoutAt: toIso(r.checkout_at),
     selfAdded: !!r.self_added,
+    strikes: normalizeStrikes(r.strikes),
   };
 }
 
 function mapSubmission(r) {
+  const hours = Number(r.hours) || 0;
   return {
     id: r.id,
     eventId: r.event_id || null,
@@ -63,7 +77,10 @@ function mapSubmission(r) {
     eventDate: r.event_date || "",
     arrivalTime: r.arrival_time || "",
     endTime: r.end_time || "",
-    hours: Number(r.hours) || 0,
+    hours,
+    // Rows written before raw_hours existed have no uncapped figure to report;
+    // they were never capped, so the credited value IS the raw value.
+    rawHours: r.raw_hours == null ? hours : Number(r.raw_hours) || 0,
     comments: r.comments || "",
     submittedAt: toIso(r.submitted_at),
   };
@@ -75,8 +92,21 @@ function assembleEvent(eventRow, attRows) {
     name: eventRow.name,
     customName: eventRow.custom_name || null,
     date: eventRow.date,
+    startTime: eventRow.start_time || "",
+    endTime: eventRow.end_time || "",
+    expectedHours: normalizeExpectedHours(eventRow.expected_hours),
     createdAt: toIso(eventRow.created_at),
     attendance: attRows.map(mapAttendance),
+  };
+}
+
+// The stored-event shape `deriveSubmissionFields` expects, from a raw row.
+function eventForDerivation(r) {
+  return {
+    name: r.ev_name,
+    customName: r.custom_name || null,
+    date: r.ev_date,
+    expectedHours: normalizeExpectedHours(r.expected_hours),
   };
 }
 
@@ -117,6 +147,7 @@ export function createPostgresStore(connectionString) {
               FROM unnest(${SEED_VOLUNTEERS}::text[]) WITH ORDINALITY AS t(name, ord)
               WHERE NOT EXISTS (SELECT 1 FROM volunteers)
               ORDER BY t.ord`,
+          ...dataMigrationStatements(),
         ]);
       })().catch((err) => {
         readyPromise = null; // let the next call retry a transient failure
@@ -124,6 +155,69 @@ export function createPostgresStore(connectionString) {
       });
     }
     return readyPromise;
+  }
+
+  // ---------- one-time data migrations (see data-migrations.js) ----------
+
+  // Returned as statements so they run inside the SAME advisory-locked
+  // transaction as the schema + seed: concurrent cold starts can't double-apply
+  // them, and a failure rolls the whole boot back rather than half-migrating.
+  //
+  // `sql.transaction([...])` is non-interactive (no reading a result mid-flight)
+  // so every statement carries its OWN "has this migration run?" guard in the
+  // WHERE clause instead of being wrapped in an if.
+  function dataMigrationStatements() {
+    // NB: the guard is written out longhand in every statement below rather
+    // than factored into a helper — the Neon HTTP tag does NOT compose nested
+    // `sql` fragments (an interpolated query object would be bound as a plain
+    // parameter), which would silently disarm the guard.
+    return [
+      // 1. Promote the chapter's student leaders. Names absent from the roster
+      //    are simply not matched, so this is a no-op on a foreign database.
+      sql`UPDATE volunteers SET role = ${ROLE_OFFICER}, updated_at = now()
+          WHERE name = ANY(${OFFICER_NAMES}::text[])
+            AND role IS DISTINCT FROM ${ROLE_OFFICER}
+            AND NOT EXISTS (
+              SELECT 1 FROM app_migrations m WHERE m.name = ${MIGRATION_PROMOTE_OFFICERS})`,
+      sql`INSERT INTO app_migrations (name) VALUES (${MIGRATION_PROMOTE_OFFICERS})
+          ON CONFLICT (name) DO NOTHING`,
+
+      // 2. Archive-then-purge the leftover records of former members. Both the
+      //    archive and the deletes use the identical predicate — name is on the
+      //    list AND no volunteer record carries that name — so a person who is
+      //    ever re-added to the roster is untouchable here.
+      sql`INSERT INTO archived_records (reason, payload)
+          SELECT ${ARCHIVE_REASON_RETIRED}, jsonb_build_object(
+            'attendance', (
+              SELECT coalesce(jsonb_agg(to_jsonb(a)), '[]'::jsonb) FROM attendance a
+              WHERE a.volunteer_name = ANY(${RETIRED_MEMBER_NAMES}::text[])
+                AND NOT EXISTS (SELECT 1 FROM volunteers v WHERE v.name = a.volunteer_name)),
+            'submissions', (
+              SELECT coalesce(jsonb_agg(to_jsonb(s)), '[]'::jsonb) FROM submissions s
+              WHERE s.volunteer_name = ANY(${RETIRED_MEMBER_NAMES}::text[])
+                AND NOT EXISTS (SELECT 1 FROM volunteers v WHERE v.name = s.volunteer_name)))
+          WHERE NOT EXISTS (
+              SELECT 1 FROM app_migrations m WHERE m.name = ${MIGRATION_PURGE_RETIRED})
+            AND (
+              EXISTS (SELECT 1 FROM attendance a
+                      WHERE a.volunteer_name = ANY(${RETIRED_MEMBER_NAMES}::text[])
+                        AND NOT EXISTS (SELECT 1 FROM volunteers v WHERE v.name = a.volunteer_name))
+              OR EXISTS (SELECT 1 FROM submissions s
+                      WHERE s.volunteer_name = ANY(${RETIRED_MEMBER_NAMES}::text[])
+                        AND NOT EXISTS (SELECT 1 FROM volunteers v WHERE v.name = s.volunteer_name)))`,
+      sql`DELETE FROM submissions s
+          WHERE s.volunteer_name = ANY(${RETIRED_MEMBER_NAMES}::text[])
+            AND NOT EXISTS (SELECT 1 FROM volunteers v WHERE v.name = s.volunteer_name)
+            AND NOT EXISTS (
+              SELECT 1 FROM app_migrations m WHERE m.name = ${MIGRATION_PURGE_RETIRED})`,
+      sql`DELETE FROM attendance a
+          WHERE a.volunteer_name = ANY(${RETIRED_MEMBER_NAMES}::text[])
+            AND NOT EXISTS (SELECT 1 FROM volunteers v WHERE v.name = a.volunteer_name)
+            AND NOT EXISTS (
+              SELECT 1 FROM app_migrations m WHERE m.name = ${MIGRATION_PURGE_RETIRED})`,
+      sql`INSERT INTO app_migrations (name) VALUES (${MIGRATION_PURGE_RETIRED})
+          ON CONFLICT (name) DO NOTHING`,
+    ];
   }
 
   // ---------- internal reads ----------
@@ -136,11 +230,71 @@ export function createPostgresStore(connectionString) {
 
   async function attendanceForEvent(id) {
     return sql`
-      SELECT a.*, v.code AS v_code
+      SELECT a.*, v.code AS v_code, COALESCE(v.role, vn.role) AS v_role
       FROM attendance a
       LEFT JOIN volunteers v ON v.id = a.volunteer_id
+      LEFT JOIN LATERAL (
+        SELECT role FROM volunteers vv
+        WHERE vv.name = a.volunteer_name
+        ORDER BY vv.created_at ASC, vv.code ASC LIMIT 1
+      ) vn ON true
       WHERE a.event_id = ${id}
       ORDER BY a.seq ASC`;
+  }
+
+  // Everything needed to re-derive submissions — for ONE attendance row, for a
+  // whole event, or for one person across every event. Deliberately a single
+  // query with optional (nullable) filters rather than three near-identical
+  // ones, so a single-row reconcile and a bulk re-reconcile can never resolve
+  // the grade / role / cap differently. Pass null to skip a filter.
+  async function reconcileRows(eventId, volunteerName) {
+    const eid = eventId == null ? null : eventId;
+    const vname = volunteerName == null ? null : volunteerName;
+    return sql`
+      SELECT a.event_id, a.volunteer_name, a.checkin_at, a.checkout_at,
+             e.name AS ev_name, e.custom_name, e.date AS ev_date, e.expected_hours,
+             v.grade AS v_grade, v.role AS v_role
+      FROM attendance a
+      JOIN events e ON e.id = a.event_id
+      LEFT JOIN LATERAL (
+        SELECT grade, role FROM volunteers vv
+        WHERE vv.name = a.volunteer_name
+        ORDER BY vv.created_at ASC, vv.code ASC LIMIT 1
+      ) v ON true
+      WHERE (${eid}::uuid IS NULL OR a.event_id = ${eid}::uuid)
+        AND (${vname}::text IS NULL OR a.volunteer_name = ${vname}::text)`;
+  }
+
+  // Build the (upsert | delete) plan for a set of reconcile rows.
+  function planReconcile(rows) {
+    const upserts = [];
+    const completeNames = [];
+    for (const r of rows) {
+      const fields = deriveSubmissionFields({
+        checkinAt: toIso(r.checkin_at),
+        checkoutAt: toIso(r.checkout_at),
+        event: eventForDerivation(r),
+        volunteer: { grade: r.v_grade, role: r.v_role },
+      });
+      if (!fields) continue;
+      completeNames.push(r.volunteer_name);
+      upserts.push(
+        sql`
+        INSERT INTO submissions
+          (event_id, volunteer_name, grade, event_name, custom_event_name, event_date,
+           arrival_time, end_time, hours, raw_hours, comments)
+        VALUES
+          (${r.event_id}, ${r.volunteer_name}, ${fields.grade}, ${fields.eventName},
+           ${fields.customEventName}, ${fields.eventDate}, ${fields.arrivalTime},
+           ${fields.endTime}, ${fields.hours}, ${fields.rawHours}, '')
+        ON CONFLICT (event_id, volunteer_name) DO UPDATE
+          SET grade = EXCLUDED.grade, event_name = EXCLUDED.event_name,
+              custom_event_name = EXCLUDED.custom_event_name, event_date = EXCLUDED.event_date,
+              arrival_time = EXCLUDED.arrival_time, end_time = EXCLUDED.end_time,
+              hours = EXCLUDED.hours, raw_hours = EXCLUDED.raw_hours, submitted_at = now()`
+      );
+    }
+    return { upserts, completeNames };
   }
 
   // Keep the volunteer's submission for this event in sync with their check-in /
@@ -148,30 +302,39 @@ export function createPostgresStore(connectionString) {
   // attendance row is complete (both times set, checkout after check-in). This
   // is how "hours" flow from the QR scan / manual times, with no stale rows.
   async function reconcileSubmission(eventId, volunteerName) {
-    const rows = await sql`
-      SELECT a.checkin_at, a.checkout_at, e.name AS ev_name, e.custom_name, e.date AS ev_date,
-             (SELECT grade FROM volunteers WHERE name = a.volunteer_name ORDER BY created_at ASC, code ASC LIMIT 1) AS v_grade
-      FROM attendance a
-      JOIN events e ON e.id = a.event_id
-      WHERE a.event_id = ${eventId} AND a.volunteer_name = ${volunteerName}`;
-    const r = rows[0];
-    if (!r || !isComplete(toIso(r.checkin_at), toIso(r.checkout_at))) {
+    if (!isUuid(eventId)) return;
+    const { upserts } = planReconcile(await reconcileRows(eventId, volunteerName));
+    if (upserts.length === 0) {
       await sql`DELETE FROM submissions WHERE event_id = ${eventId} AND volunteer_name = ${volunteerName}`;
       return;
     }
-    const hrs = hoursBetween(toIso(r.checkin_at), toIso(r.checkout_at));
-    const eventName = r.custom_name ? r.custom_name : r.ev_name;
-    await sql`
-      INSERT INTO submissions
-        (event_id, volunteer_name, grade, event_name, custom_event_name, event_date, arrival_time, end_time, hours, comments)
-      VALUES
-        (${eventId}, ${volunteerName}, ${r.v_grade || ""}, ${eventName}, ${r.custom_name || null}, ${r.ev_date},
-         ${localHHMM(toIso(r.checkin_at))}, ${localHHMM(toIso(r.checkout_at))}, ${hrs}, '')
-      ON CONFLICT (event_id, volunteer_name) DO UPDATE
-        SET grade = EXCLUDED.grade, event_name = EXCLUDED.event_name,
-            custom_event_name = EXCLUDED.custom_event_name, event_date = EXCLUDED.event_date,
-            arrival_time = EXCLUDED.arrival_time, end_time = EXCLUDED.end_time,
-            hours = EXCLUDED.hours, submitted_at = now()`;
+    await sql.transaction(upserts);
+  }
+
+  // Re-derive EVERY submission of one event. Needed whenever a property the
+  // submissions copy from the event changes — its name, date, or (crucially)
+  // its Expected Volunteer Hours, which caps non-officers' credit.
+  async function reconcileEvent(eventId) {
+    if (!isUuid(eventId)) return;
+    const { upserts, completeNames } = planReconcile(
+      await reconcileRows(eventId, null)
+    );
+    // One statement removes both the now-incomplete rows AND any submission
+    // whose attendance row vanished entirely.
+    await sql.transaction([
+      sql`DELETE FROM submissions
+          WHERE event_id = ${eventId}
+            AND NOT (volunteer_name = ANY(${completeNames}::text[]))`,
+      ...upserts,
+    ]);
+  }
+
+  // Re-derive every event this person has hours for. Needed when their ROLE
+  // changes (officer ⇄ volunteer switches the cap off/on) or their grade
+  // changes (submissions carry a copy of it).
+  async function reconcileVolunteerName(volunteerName) {
+    const { upserts } = planReconcile(await reconcileRows(null, volunteerName));
+    if (upserts.length > 0) await sql.transaction(upserts);
   }
 
   // ---------- volunteers ----------
@@ -208,14 +371,16 @@ export function createPostgresStore(connectionString) {
     email = "",
     phone = "",
     grade = "",
+    role = undefined,
     customFields = {},
   }) {
     await ensureReady();
     const rows = await sql`
-      INSERT INTO volunteers (code, name, email, phone, grade, custom_fields)
+      INSERT INTO volunteers (code, name, email, phone, grade, role, custom_fields)
       VALUES (
         'TCYA-' || lpad(nextval('volunteer_code_seq')::text, 4, '0'),
-        ${name}, ${email}, ${phone}, ${grade}, ${JSON.stringify(customFields)}::jsonb
+        ${name}, ${email}, ${phone}, ${grade}, ${normalizeRole(role)},
+        ${JSON.stringify(customFields)}::jsonb
       )
       RETURNING *`;
     return mapVolunteer(rows[0]);
@@ -233,16 +398,21 @@ export function createPostgresStore(connectionString) {
       email: patch.email !== undefined ? patch.email : cur.email,
       phone: patch.phone !== undefined ? patch.phone : cur.phone,
       grade: patch.grade !== undefined ? patch.grade : cur.grade,
+      role:
+        patch.role !== undefined ? normalizeRole(patch.role) : normalizeRole(cur.role),
       customFields:
         patch.customFields !== undefined ? patch.customFields : cur.custom_fields,
       active: patch.active !== undefined ? patch.active : cur.active,
     };
     const nameChanged = next.name !== cur.name;
+    const derivationChanged =
+      next.role !== normalizeRole(cur.role) || next.grade !== cur.grade;
 
     const statements = [
       sql`UPDATE volunteers
           SET name = ${next.name}, email = ${next.email}, phone = ${next.phone},
-              grade = ${next.grade}, custom_fields = ${JSON.stringify(next.customFields)}::jsonb,
+              grade = ${next.grade}, role = ${next.role},
+              custom_fields = ${JSON.stringify(next.customFields)}::jsonb,
               active = ${next.active}, updated_at = now()
           WHERE id = ${id}
           RETURNING *`,
@@ -262,6 +432,10 @@ export function createPostgresStore(connectionString) {
 
     try {
       const results = await sql.transaction(statements);
+      // Promoting to officer lifts the per-event cap (and demoting re-applies
+      // it), and submissions carry a copy of the grade — so either change has to
+      // re-derive this person's EXISTING hours, not just future ones.
+      if (derivationChanged) await reconcileVolunteerName(next.name);
       return mapVolunteer(results[0][0]);
     } catch (e) {
       if (isUniqueViolation(e)) {
@@ -289,9 +463,14 @@ export function createPostgresStore(connectionString) {
     const events = await sql`SELECT * FROM events ORDER BY date DESC, created_at DESC`;
     if (events.length === 0) return [];
     const att = await sql`
-      SELECT a.*, v.code AS v_code
+      SELECT a.*, v.code AS v_code, COALESCE(v.role, vn.role) AS v_role
       FROM attendance a
       LEFT JOIN volunteers v ON v.id = a.volunteer_id
+      LEFT JOIN LATERAL (
+        SELECT role FROM volunteers vv
+        WHERE vv.name = a.volunteer_name
+        ORDER BY vv.created_at ASC, vv.code ASC LIMIT 1
+      ) vn ON true
       ORDER BY a.seq ASC`;
     const byEvent = new Map();
     for (const a of att) {
@@ -309,13 +488,55 @@ export function createPostgresStore(connectionString) {
     return assembleEvent(ev, att);
   }
 
-  async function createEvent({ name, customName = null, date }) {
+  async function createEvent({
+    name,
+    customName = null,
+    date,
+    startTime = "",
+    endTime = "",
+    expectedHours = null,
+  }) {
     await ensureReady();
     const rows = await sql`
-      INSERT INTO events (name, custom_name, date)
-      VALUES (${name}, ${customName}, ${date})
+      INSERT INTO events (name, custom_name, date, start_time, end_time, expected_hours)
+      VALUES (${name}, ${customName}, ${date}, ${startTime || ""}, ${endTime || ""},
+              ${normalizeExpectedHours(expectedHours)})
       RETURNING *`;
     return assembleEvent(rows[0], []);
+  }
+
+  // Edit an event in place. Every field here is either copied into the derived
+  // submissions (name/date) or governs them (expectedHours ⇒ the cap), so the
+  // whole event is re-derived afterwards — an admin lowering the expected hours
+  // must immediately correct everyone's already-credited hours.
+  async function updateEvent(id, patch) {
+    await ensureReady();
+    if (!isUuid(id)) return null;
+    const cur = await eventRowById(id);
+    if (!cur) return null;
+    const next = {
+      name: patch.name !== undefined ? patch.name : cur.name,
+      customName:
+        patch.customName !== undefined ? patch.customName || null : cur.custom_name,
+      date: patch.date !== undefined ? patch.date : cur.date,
+      startTime:
+        patch.startTime !== undefined ? patch.startTime || "" : cur.start_time || "",
+      endTime: patch.endTime !== undefined ? patch.endTime || "" : cur.end_time || "",
+      expectedHours:
+        patch.expectedHours !== undefined
+          ? normalizeExpectedHours(patch.expectedHours)
+          : normalizeExpectedHours(cur.expected_hours),
+    };
+    const rows = await sql`
+      UPDATE events
+      SET name = ${next.name}, custom_name = ${next.customName}, date = ${next.date},
+          start_time = ${next.startTime}, end_time = ${next.endTime},
+          expected_hours = ${next.expectedHours}
+      WHERE id = ${id}
+      RETURNING *`;
+    if (rows.length === 0) return null;
+    await reconcileEvent(id);
+    return getEvent(id);
   }
 
   async function deleteEvent(id) {
@@ -374,9 +595,9 @@ export function createPostgresStore(connectionString) {
     return {
       ok: true,
       volunteer: vol,
-      // RETURNING * has no joined volunteer code; supply it from `vol` so the
-      // response matches the memory store (which resolves the code).
-      attendance: { ...mapAttendance(rows[0]), code: vol.code },
+      // RETURNING * has no joined volunteer code/role; supply them from `vol`
+      // so the response matches the memory store (which resolves both).
+      attendance: { ...mapAttendance(rows[0]), code: vol.code, role: vol.role },
       event: await getEvent(eventId),
       alreadyDone,
     };
@@ -402,7 +623,9 @@ export function createPostgresStore(connectionString) {
     return {
       ok: true,
       volunteer: vol,
-      attendance: { ...mapAttendance(rows[0]), code: vol.code },
+      // RETURNING * has no joined volunteer code/role; supply them from `vol`
+      // so the response matches the memory store (which resolves both).
+      attendance: { ...mapAttendance(rows[0]), code: vol.code, role: vol.role },
       event: await getEvent(eventId),
       alreadyDone,
     };
@@ -427,8 +650,15 @@ export function createPostgresStore(connectionString) {
     const coProvided = typeof patch.volunteerCheckout === "boolean";
     const coVal = coProvided ? patch.volunteerCheckout : null;
 
+    // Conduct strikes are independent of the times and never touch hours.
+    const strikesProvided = patch.strikes !== undefined;
+    const strikesVal = strikesProvided ? normalizeStrikes(patch.strikes) : null;
+
     const rows = await sql`
       UPDATE attendance SET
+        strikes = CASE
+          WHEN ${strikesProvided}::boolean THEN ${strikesVal}::integer
+          ELSE strikes END,
         staff_checkin = CASE
           WHEN ${checkinProvided}::boolean THEN (${checkinVal}::timestamptz IS NOT NULL)
           WHEN ${staffProvided}::boolean THEN ${staffVal}::boolean
@@ -540,10 +770,11 @@ export function createPostgresStore(connectionString) {
       stmts.push(sql`DELETE FROM volunteers`);
       for (const v of volunteers) {
         stmts.push(sql`
-          INSERT INTO volunteers (id, code, name, email, phone, grade, custom_fields, active, created_at, updated_at)
+          INSERT INTO volunteers (id, code, name, email, phone, grade, role, custom_fields, active, created_at, updated_at)
           VALUES (
             ${isUuid(v.id) ? v.id : crypto.randomUUID()},
             ${v.code}, ${v.name}, ${v.email || ""}, ${v.phone || ""}, ${v.grade || ""},
+            ${normalizeRole(v.role)},
             ${JSON.stringify(v.customFields || {})}::jsonb, ${v.active !== false},
             ${v.createdAt || new Date().toISOString()}, ${v.updatedAt || new Date().toISOString()}
           )
@@ -571,19 +802,22 @@ export function createPostgresStore(connectionString) {
       if (seenEventIds.has(eid)) continue;
       seenEventIds.add(eid);
       stmts.push(sql`
-        INSERT INTO events (id, name, custom_name, date, created_at)
-        VALUES (${eid}, ${e.name || ""}, ${e.customName ?? null}, ${e.date || ""}, ${e.createdAt || new Date().toISOString()})
+        INSERT INTO events (id, name, custom_name, date, start_time, end_time, expected_hours, created_at)
+        VALUES (${eid}, ${e.name || ""}, ${e.customName ?? null}, ${e.date || ""},
+                ${e.startTime || ""}, ${e.endTime || ""}, ${normalizeExpectedHours(e.expectedHours)},
+                ${e.createdAt || new Date().toISOString()})
         ON CONFLICT (id) DO NOTHING`);
       for (const a of Array.isArray(e.attendance) ? e.attendance : []) {
         if (!a || typeof a.volunteerName !== "string") continue;
         stmts.push(sql`
           INSERT INTO attendance
-            (event_id, volunteer_id, volunteer_name, staff_checkin, checkin_at, volunteer_checkout, checkout_at, self_added)
+            (event_id, volunteer_id, volunteer_name, staff_checkin, checkin_at, volunteer_checkout, checkout_at, self_added, strikes)
           VALUES (
             ${eid},
             (SELECT id FROM volunteers WHERE name = ${a.volunteerName} ORDER BY created_at LIMIT 1),
             ${a.volunteerName}, ${!!a.staffCheckin}, ${a.checkinAt ?? null},
-            ${!!a.volunteerCheckout}, ${a.checkoutAt ?? null}, ${!!a.selfAdded}
+            ${!!a.volunteerCheckout}, ${a.checkoutAt ?? null}, ${!!a.selfAdded},
+            ${normalizeStrikes(a.strikes)}
           )
           ON CONFLICT (event_id, volunteer_name) DO NOTHING`);
       }
@@ -593,11 +827,12 @@ export function createPostgresStore(connectionString) {
       const sid = isUuid(s.id) ? s.id : crypto.randomUUID();
       stmts.push(sql`
         INSERT INTO submissions
-          (id, event_id, volunteer_name, grade, event_name, custom_event_name, event_date, arrival_time, end_time, hours, comments, submitted_at)
+          (id, event_id, volunteer_name, grade, event_name, custom_event_name, event_date, arrival_time, end_time, hours, raw_hours, comments, submitted_at)
         VALUES (
           ${sid}, ${s.eventId || null}, ${s.volunteerName || ""}, ${s.grade || ""},
           ${s.eventName || ""}, ${s.customEventName ?? null}, ${s.eventDate || null},
           ${s.arrivalTime || ""}, ${s.endTime || ""}, ${Number(s.hours) || 0},
+          ${s.rawHours == null ? Number(s.hours) || 0 : Number(s.rawHours) || 0},
           ${s.comments || ""}, ${s.submittedAt || new Date().toISOString()}
         )
         ON CONFLICT (event_id, volunteer_name) DO NOTHING`);
@@ -636,6 +871,7 @@ export function createPostgresStore(connectionString) {
     listEvents,
     getEvent,
     createEvent,
+    updateEvent,
     deleteEvent,
     addAttendees,
     checkInByCode,

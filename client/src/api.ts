@@ -2,6 +2,7 @@ import type {
   Submission,
   VolunteerEvent,
   NewEvent,
+  EventPatch,
   Volunteer,
   NewVolunteer,
   VolunteerPatch,
@@ -161,6 +162,20 @@ export async function createEvent(payload: NewEvent): Promise<VolunteerEvent> {
   return handle<VolunteerEvent>(res);
 }
 
+// Edit an event's name / date / times / expected hours. The server re-derives
+// every volunteer's credited hours for the event afterwards.
+export async function updateEvent(
+  id: string,
+  patch: EventPatch
+): Promise<VolunteerEvent> {
+  const res = await fetch(`${API_BASE}/events/${id}`, {
+    method: "PATCH",
+    headers: headers(true),
+    body: JSON.stringify(patch),
+  });
+  return handle<VolunteerEvent>(res);
+}
+
 export async function deleteEvent(id: string): Promise<void> {
   const res = await fetch(`${API_BASE}/events/${id}`, {
     method: "DELETE",
@@ -189,6 +204,7 @@ export async function patchAttendee(
     volunteerCheckout?: boolean;
     checkinAt?: string | null;
     checkoutAt?: string | null;
+    strikes?: number;
   }
 ): Promise<VolunteerEvent> {
   const res = await fetch(`${API_BASE}/events/${eventId}/attendance`, {

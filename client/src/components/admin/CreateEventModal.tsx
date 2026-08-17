@@ -4,6 +4,11 @@ import { createEvent } from "../../api";
 import type { VolunteerEvent } from "../../types";
 import { todayYmd } from "../../utils";
 import { useFocusTrap } from "../../useFocusTrap";
+import {
+  EventScheduleFields,
+  ExpectedHoursHint,
+  parseExpectedHoursInput,
+} from "./eventFields";
 
 interface Props {
   open: boolean;
@@ -14,7 +19,14 @@ interface Props {
 export function CreateEventModal({ open, onClose, onCreated }: Props) {
   const [name, setName] = useState("");
   const [customName, setCustomName] = useState("");
-  const [date, setDate] = useState("");
+  // Date → Start Time → End Time → Expected Hours, the same order they appear
+  // in on the Events page (see eventFields.tsx).
+  const [schedule, setSchedule] = useState({
+    date: "",
+    startTime: "",
+    endTime: "",
+    expectedHours: "",
+  });
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -24,7 +36,7 @@ export function CreateEventModal({ open, onClose, onCreated }: Props) {
     if (open) {
       setName("");
       setCustomName("");
-      setDate(todayYmd());
+      setSchedule({ date: todayYmd(), startTime: "", endTime: "", expectedHours: "" });
       setError(null);
     }
   }, [open]);
@@ -45,14 +57,26 @@ export function CreateEventModal({ open, onClose, onCreated }: Props) {
     if (name === OTHER_EVENT && !customName.trim()) {
       return setError("Please specify the custom event name.");
     }
-    if (!date) return setError("Please pick a date.");
+    if (!schedule.date) return setError("Please pick a date.");
+    if (
+      schedule.startTime &&
+      schedule.endTime &&
+      schedule.endTime <= schedule.startTime
+    ) {
+      return setError("End time must be after the start time.");
+    }
+    const expected = parseExpectedHoursInput(schedule.expectedHours);
+    if (!expected.ok) return setError(expected.error);
 
     try {
       setSubmitting(true);
       const created = await createEvent({
         name,
         customName: name === OTHER_EVENT ? customName.trim() : null,
-        date,
+        date: schedule.date,
+        startTime: schedule.startTime,
+        endTime: schedule.endTime,
+        expectedHours: expected.value,
       });
       onCreated(created);
     } catch (err) {
@@ -146,16 +170,13 @@ export function CreateEventModal({ open, onClose, onCreated }: Props) {
             )}
 
             <div>
-              <label className="label" htmlFor="new-event-date">
-                Date
-              </label>
-              <input
-                id="new-event-date"
-                type="date"
-                className="input"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
+              <EventScheduleFields
+                idPrefix="new-event"
+                values={schedule}
+                disabled={submitting}
+                onChange={(patch) => setSchedule((prev) => ({ ...prev, ...patch }))}
               />
+              <ExpectedHoursHint />
             </div>
           </div>
 

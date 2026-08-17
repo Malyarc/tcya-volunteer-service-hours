@@ -1,21 +1,26 @@
 // Canonical roster used to seed the `volunteers` table on a FRESH database
-// (empty table only). These are the REAL go-live students imported 2026-08-01
-// from the chapter's Volunteer Hours spreadsheet, in alphabetical order, so a
-// fresh deploy assigns TCYA-0001.. in the same order production uses. Grades and
-// service hours are NOT seeded here — they live in the database (loaded via the
-// admin import / entered through the app). Seeding is idempotent and only runs
-// when the table is empty, so editing this list later does NOT change existing
-// rows — add new volunteers through the admin UI (they get the next code).
+// (empty table only). This is the REAL live roster as of 2026-08-16, read back
+// from production, in the same alphabetical order production uses, so a fresh
+// deploy assigns TCYA-0001.. identically. Grades, roles and service hours are
+// NOT seeded here — they live in the database (entered through the admin UI;
+// officer roles are applied by the one-time migration in db/data-migrations.js).
+// Seeding is idempotent and only runs when the table is empty, so editing this
+// list later does NOT change existing rows — add new volunteers through the
+// admin UI (they get the next code).
 export const SEED_VOLUNTEERS = [
   "Ailsa Chen",
-  "Alex Zhang",
-  "Alvan（Haobo）Zhang",
+  "Alston Tu",
   "Amber Wang",
   "Amelia Lin",
   "Andrew Luo",
+  "Aria Asavasumrid",
+  "Ashton Khuu",
   "Caitlyn Huang",
+  "Cathy Yu",
   "Chengguo Jiang",
+  "Chloe Lin",
   "Christine Tang",
+  "Christy Fu",
   "Clarissa Tran",
   "Dawson Thai",
   "Dylan Lin",
@@ -24,35 +29,48 @@ export const SEED_VOLUNTEERS = [
   "Elizabeth Yi",
   "Elvin Chen",
   "Emma Soderdahl",
-  "Erika Hsieh",
-  "Ethan de la Cruz",
   "Evan Chen",
+  "Evan Liu",
+  "Gideon Yu",
+  "Haobo (Alvan) Zhang",
+  "Haotian (Alex) Zhang",
+  "Haoyu (Andy) Zhang",
   "Hopi Ren",
   "Issac Cao",
   "Ivory Lin",
+  "Jacob Chu",
   "Jaden Liu (Gr.10)",
   "Jaden Liu (Gr.11)",
   "Jaeden Wang",
-  "Jingrou Angel Zhang",
-  "Jocelin Wang",
+  "Jason Hung",
+  "Jayden Lin",
+  "Jingrou (Angel) Zhang",
   "Jordan Pao",
-  "Justin Lee",
   "Justin Liu",
+  "Khloe Huang",
   "Kristy Cao",
+  "Kyle Lee",
   "Lance Tsai",
   "Michelle Tang",
+  "Miya Tam",
+  "Montelena Hu",
   "Montgomery Hu",
+  "Nathan Huang",
+  "Olivia Huang",
+  "Oscar Liu",
   "Richard Wang",
   "Rinzen Khuang",
+  "Ruby Luo",
   "Ryan Lee",
   "Sophia Lee",
-  "Summer Qiu",
+  "Summer (Xia Qiu)",
   "Tabitha Yu",
   "Thunder Chen",
   "Tian Zan",
-  "Vito Wang",
-  "Xia Qiu",
-  "Xiqiao Ma",
+  "Vito (WaiLam) Wang",
+  "William Yi",
+  "Yingzi Shen",
+  "Yuki Tam",
   "Ziming Liu",
   "Ziqiang (Allen) Chen",
 ];

@@ -8,8 +8,9 @@ import {
   formatClockFromIso,
   isoToLocalInput,
   localInputToIso,
+  groupEventsByName,
 } from "./utils";
-import type { Submission, VolunteerEvent } from "./types";
+import type { RosterEntry, Submission, VolunteerEvent } from "./types";
 
 function sub(over: Partial<Submission> = {}): Submission {
   return {
@@ -23,6 +24,7 @@ function sub(over: Partial<Submission> = {}): Submission {
     arrivalTime: over.arrivalTime ?? "08:00",
     endTime: over.endTime ?? "11:30",
     hours: over.hours ?? 3.5,
+    rawHours: over.rawHours ?? over.hours ?? 3.5,
     comments: over.comments ?? "",
     submittedAt: over.submittedAt ?? "2026-03-15T09:00:00.000Z",
   };
@@ -34,6 +36,9 @@ function evt(over: Partial<VolunteerEvent> = {}): VolunteerEvent {
     name: over.name ?? "Culture - Beach Cleanup",
     customName: over.customName ?? null,
     date: over.date ?? "2026-03-15",
+    startTime: over.startTime ?? "",
+    endTime: over.endTime ?? "",
+    expectedHours: over.expectedHours ?? null,
     createdAt: over.createdAt ?? "2026-03-01T00:00:00.000Z",
     attendance: over.attendance ?? [
       {
@@ -154,7 +159,10 @@ describe("check-in/out timestamp helpers", () => {
 });
 
 describe("buildSummaries", () => {
-  const NAMES = [{ name: "Aaron Tse" }, { name: "Betty Lin" }] as const;
+  const NAMES: RosterEntry[] = [
+    { name: "Aaron Tse", grade: "" },
+    { name: "Betty Lin", grade: "" },
+  ];
 
   it("sums only countable hours and never double-counts duplicates", () => {
     const events = [evt({ id: "e1" }), evt({ id: "e2", date: "2026-04-01" })];
@@ -213,10 +221,183 @@ describe("buildSummaries", () => {
     const events = [evt({ id: "e1" })];
     const submissions = [sub({ eventId: "e1", grade: "8th" })];
     const summaries = buildSummaries(
-      [{ name: "Aaron Tse", grade: "11th" }],
+      [{ name: "Aaron Tse", grade: "11th" }] as RosterEntry[],
       submissions,
       events
     );
     expect(summaries.find((s) => s.name === "Aaron Tse")!.latestGrade).toBe("11th");
+  });
+
+  // --- The Roster tab must equal the Volunteers tab, always ---
+
+  it("NEVER invents a roster row from a leftover submission name", () => {
+    // "Ghost Member" was deleted from the roster but their hours stayed behind.
+    // Before this guard they appeared as an extra row on the Roster tab only —
+    // exactly how the two tabs drifted apart.
+    const events = [
+      evt({
+        id: "e1",
+        attendance: [
+          { volunteerName: "Aaron Tse", staffCheckin: true, volunteerCheckout: true },
+          { volunteerName: "Ghost Member", staffCheckin: true, volunteerCheckout: true },
+        ],
+      }),
+    ];
+    const submissions = [
+      sub({ eventId: "e1", volunteerName: "Aaron Tse", hours: 3 }),
+      sub({ eventId: "e1", volunteerName: "Ghost Member", hours: 8 }),
+    ];
+    const summaries = buildSummaries(NAMES, submissions, events);
+    expect(summaries.map((s) => s.name)).toEqual(["Aaron Tse", "Betty Lin"]);
+    expect(summaries.some((s) => s.name === "Ghost Member")).toBe(false);
+    // …and the ghost's hours are excluded from the chapter total.
+    expect(summaries.reduce((a, s) => a + s.totalHours, 0)).toBe(3);
+  });
+
+  it("carries the officer role through from the roster", () => {
+    const summaries = buildSummaries(
+      [
+        { name: "Aaron Tse", grade: "10th", role: "officer" },
+        { name: "Betty Lin", grade: "9th" },
+      ],
+      [],
+      []
+    );
+    expect(summaries.find((s) => s.name === "Aaron Tse")!.role).toBe("officer");
+    expect(summaries.find((s) => s.name === "Betty Lin")!.role).toBe("volunteer");
+  });
+
+  // --- Strikes ---
+
+  it("totals strikes across events and attaches them to the right event row", () => {
+    const events = [
+      evt({
+        id: "e1",
+        date: "2026-03-15",
+        attendance: [
+          { volunteerName: "Aaron Tse", staffCheckin: true, volunteerCheckout: true, strikes: 1 },
+        ],
+      }),
+      evt({
+        id: "e2",
+        date: "2026-04-01",
+        attendance: [
+          { volunteerName: "Aaron Tse", staffCheckin: true, volunteerCheckout: true, strikes: 2 },
+        ],
+      }),
+    ];
+    const submissions = [
+      sub({ id: "s1", eventId: "e1", hours: 3, eventDate: "2026-03-15" }),
+      sub({ id: "s2", eventId: "e2", hours: 2, eventDate: "2026-04-01" }),
+    ];
+    const aaron = buildSummaries(NAMES, submissions, events).find(
+      (s) => s.name === "Aaron Tse"
+    )!;
+    expect(aaron.totalStrikes).toBe(3);
+    expect(aaron.eventRows.map((r) => [r.eventId, r.strikes])).toEqual([
+      ["e2", 2], // newest first
+      ["e1", 1],
+    ]);
+    expect(aaron.totalHours).toBe(5); // strikes never touch hours
+  });
+
+  it("still shows a strike on an event with no countable hours", () => {
+    // Checked in but never checked out ⇒ no submission — the strike must not
+    // silently disappear from the roster.
+    const events = [
+      evt({
+        id: "e1",
+        attendance: [
+          { volunteerName: "Aaron Tse", staffCheckin: true, volunteerCheckout: false, strikes: 1 },
+        ],
+      }),
+    ];
+    const aaron = buildSummaries(NAMES, [], events).find((s) => s.name === "Aaron Tse")!;
+    expect(aaron.totalStrikes).toBe(1);
+    expect(aaron.eventRows).toHaveLength(1);
+    expect(aaron.eventRows[0].hours).toBeNull();
+    expect(aaron.eventRows[0].strikes).toBe(1);
+    expect(aaron.totalHours).toBe(0);
+  });
+
+  it("reports zero strikes for a clean volunteer", () => {
+    const aaron = buildSummaries(NAMES, [sub()], [evt()]).find(
+      (s) => s.name === "Aaron Tse"
+    )!;
+    expect(aaron.totalStrikes).toBe(0);
+    expect(aaron.eventRows.every((r) => r.strikes === 0)).toBe(true);
+  });
+});
+
+describe("groupEventsByName", () => {
+  const TODAY = "2026-06-01";
+
+  it("puts each event type in its own group, upcoming groups first", () => {
+    const events = [
+      evt({ id: "a1", name: "Charity - Food Distribution", date: "2026-04-26" }),
+      evt({ id: "a2", name: "Charity - Food Distribution", date: "2026-07-26" }),
+      evt({ id: "b1", name: "Culture - Beach Cleanup", date: "2026-04-18" }),
+    ];
+    const groups = groupEventsByName(events, [], TODAY);
+    expect(groups.map((g) => g.name)).toEqual([
+      "Charity - Food Distribution", // has an upcoming date
+      "Culture - Beach Cleanup", // past only
+    ]);
+    const food = groups[0];
+    expect(food.totalOccurrences).toBe(2);
+    expect(food.upcomingCount).toBe(1);
+    expect(food.nextDate).toBe("2026-07-26");
+    expect(food.lastDate).toBe("2026-04-26");
+    // Upcoming date is listed first, then past dates newest-first.
+    expect(food.occurrences.map((e) => e.date)).toEqual(["2026-07-26", "2026-04-26"]);
+  });
+
+  it("gives a custom 'Others' event its own group under its own name", () => {
+    const groups = groupEventsByName(
+      [
+        evt({ id: "x", name: "Others - please specify", customName: "Toy Drive" }),
+        evt({ id: "y", name: "Culture - Beach Cleanup" }),
+      ],
+      [],
+      TODAY
+    );
+    expect(groups.map((g) => g.name).sort()).toEqual([
+      "Culture - Beach Cleanup",
+      "Toy Drive",
+    ]);
+  });
+
+  it("rolls up attendance, confirmations and credited hours per group", () => {
+    const events = [
+      evt({
+        id: "e1",
+        date: "2026-04-26",
+        attendance: [
+          { volunteerName: "Aaron Tse", staffCheckin: true, volunteerCheckout: true },
+          { volunteerName: "Betty Lin", staffCheckin: true, volunteerCheckout: false },
+        ],
+      }),
+      evt({
+        id: "e2",
+        date: "2026-05-24",
+        attendance: [
+          { volunteerName: "Aaron Tse", staffCheckin: true, volunteerCheckout: true },
+        ],
+      }),
+    ];
+    const submissions = [
+      sub({ id: "s1", eventId: "e1", hours: 3, eventDate: "2026-04-26" }),
+      sub({ id: "s2", eventId: "e2", hours: 2.5, eventDate: "2026-05-24" }),
+      // Betty never checked out ⇒ her row must not count toward the group total.
+      sub({ id: "s3", eventId: "e1", volunteerName: "Betty Lin", hours: 9, eventDate: "2026-04-26" }),
+    ];
+    const [group] = groupEventsByName(events, submissions, TODAY);
+    expect(group.totalAttendees).toBe(3);
+    expect(group.totalConfirmed).toBe(2);
+    expect(group.totalHours).toBe(5.5);
+  });
+
+  it("returns nothing for an empty event list", () => {
+    expect(groupEventsByName([], [], TODAY)).toEqual([]);
   });
 });

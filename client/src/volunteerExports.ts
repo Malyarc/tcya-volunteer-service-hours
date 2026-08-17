@@ -36,6 +36,7 @@ export function buildRosterSheetData(volunteers: Volunteer[]): {
     const row: Record<string, string> = {
       ID: formatDisplayId(v.code),
       Name: v.name,
+      Role: v.role === "officer" ? "Officer" : "Volunteer",
       Grade: v.grade || "",
       Email: v.email || "",
       Phone: v.phone || "",
@@ -56,11 +57,12 @@ export async function exportVolunteersExcel(volunteers: Volunteer[]) {
   const sheet = XLSX.utils.json_to_sheet(
     rows.length
       ? rows
-      : [{ ID: "", Name: "", Grade: "", Email: "", Phone: "", "QR Payload": "" }]
+      : [{ ID: "", Name: "", Role: "", Grade: "", Email: "", Phone: "", "QR Payload": "" }]
   );
   sheet["!cols"] = [
     { wch: 14 },
     { wch: 26 },
+    { wch: 10 },
     { wch: 8 },
     { wch: 26 },
     { wch: 16 },

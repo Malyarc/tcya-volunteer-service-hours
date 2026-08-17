@@ -1,4 +1,9 @@
-import type { Submission, VolunteerEvent } from "./types";
+import type {
+  RosterEntry,
+  Submission,
+  VolunteerEvent,
+  VolunteerRole,
+} from "./types";
 
 // Today's date as a local YYYY-MM-DD. Using `new Date().toISOString()` would
 // yield the UTC date, which is already "tomorrow" for US timezones in the
@@ -115,15 +120,61 @@ export function getEventDisplayName(event: VolunteerEvent): string {
   return event.customName ? event.customName : event.name;
 }
 
+// The number of cumulative strikes at which a volunteer is surfaced on the
+// admin watchlist. Three strikes is the chapter's threshold.
+export const STRIKE_WATCHLIST_THRESHOLD = 3;
+
+// One line in a volunteer's expanded roster row: an event they were credited
+// hours for, an event where they picked up a strike, or both.
+export interface VolunteerEventRow {
+  key: string;
+  eventId: string | null;
+  eventDate: string;
+  eventName: string;
+  // null when the row exists only because of a strike (no countable hours yet).
+  hours: number | null;
+  strikes: number;
+  submission: Submission | null;
+}
+
 export interface VolunteerSummary {
   name: string;
   latestGrade: string;
+  role: VolunteerRole;
   totalHours: number;
   // Only the submissions that count toward the volunteer's hours (both
   // check-ins are green). The expanded row only shows these.
   submissions: Submission[];
   // Total submissions including pending ones, useful as a UI hint.
   pendingCount: number;
+  // Cumulative strikes across every event.
+  totalStrikes: number;
+  // Every event worth showing in the expanded row — counted hours AND any event
+  // carrying a strike, so a strike can never be invisible just because the
+  // volunteer's hours for that event aren't complete.
+  eventRows: VolunteerEventRow[];
+}
+
+// Strikes live on attendance (the source of truth), not on the derived
+// submissions — so they survive an incomplete check-out and are still visible
+// when no hours were credited.
+export function buildStrikeIndex(
+  events: VolunteerEvent[]
+): Map<string, Map<string, number>> {
+  const byName = new Map<string, Map<string, number>>();
+  for (const e of events) {
+    for (const a of e.attendance || []) {
+      const n = a.strikes || 0;
+      if (n <= 0) continue;
+      let forVolunteer = byName.get(a.volunteerName);
+      if (!forVolunteer) {
+        forVolunteer = new Map();
+        byName.set(a.volunteerName, forVolunteer);
+      }
+      forVolunteer.set(e.id, n);
+    }
+  }
+  return byName;
 }
 
 // Collapse a volunteer's submissions to one per event (keeping the most
@@ -150,21 +201,35 @@ export function dedupeSubmissionsByEvent(subs: Submission[]): Submission[] {
   return [...byEvent.values(), ...noEvent];
 }
 
+// The roster IS the volunteer list.
+//
+// This function is deliberately roster-DRIVEN: a submission whose volunteerName
+// has no roster entry is ignored entirely. Previously any leftover submission
+// name (a former member whose volunteer record was deleted but whose hours
+// stayed behind) silently appeared as an extra roster row, which is exactly how
+// the Roster tab and the Volunteers tab drifted apart. Now they cannot: both are
+// projections of the same `volunteers` table.
 export function buildSummaries(
-  roster: ReadonlyArray<{ name: string; grade?: string }>,
+  roster: ReadonlyArray<RosterEntry>,
   submissions: Submission[],
   events: VolunteerEvent[]
 ): VolunteerSummary[] {
   const gradeByName = new Map<string, string>();
+  const roleByName = new Map<string, VolunteerRole>();
   const allByName = new Map<string, Submission[]>();
   for (const r of roster) {
     allByName.set(r.name, []);
     if (r.grade) gradeByName.set(r.name, r.grade);
+    roleByName.set(r.name, r.role === "officer" ? "officer" : "volunteer");
   }
   for (const s of submissions) {
-    if (!allByName.has(s.volunteerName)) allByName.set(s.volunteerName, []);
-    allByName.get(s.volunteerName)!.push(s);
+    // Roster-only: no ghost rows. See the note above.
+    const bucket = allByName.get(s.volunteerName);
+    if (bucket) bucket.push(s);
   }
+
+  const strikeIndex = buildStrikeIndex(events);
+  const eventById = new Map(events.map((e) => [e.id, e]));
 
   const summaries: VolunteerSummary[] = [];
   for (const [name, rawItems] of allByName.entries()) {
@@ -192,12 +257,53 @@ export function buildSummaries(
         events.some((e) => e.id === s.eventId) &&
         !isCountableSubmission(s, events)
     ).length;
+
+    const strikesForVolunteer = strikeIndex.get(name);
+    const totalStrikes = strikesForVolunteer
+      ? [...strikesForVolunteer.values()].reduce((a, b) => a + b, 0)
+      : 0;
+
+    // Rows = every counted event, PLUS any event carrying a strike that has no
+    // counted submission (otherwise that strike would be invisible here).
+    const eventRows: VolunteerEventRow[] = counted.map((s) => ({
+      key: s.id,
+      eventId: s.eventId || null,
+      eventDate: s.eventDate,
+      eventName: displayEventName(s),
+      hours: s.hours || 0,
+      strikes: (s.eventId && strikesForVolunteer?.get(s.eventId)) || 0,
+      submission: s,
+    }));
+    if (strikesForVolunteer) {
+      const covered = new Set(counted.map((s) => s.eventId));
+      for (const [eventId, strikes] of strikesForVolunteer.entries()) {
+        if (covered.has(eventId)) continue;
+        const ev = eventById.get(eventId);
+        if (!ev) continue;
+        eventRows.push({
+          key: `strike:${eventId}`,
+          eventId,
+          eventDate: ev.date,
+          eventName: getEventDisplayName(ev),
+          hours: null,
+          strikes,
+          submission: null,
+        });
+      }
+    }
+    eventRows.sort((a, b) =>
+      a.eventDate < b.eventDate ? 1 : a.eventDate > b.eventDate ? -1 : 0
+    );
+
     summaries.push({
       name,
       latestGrade,
+      role: roleByName.get(name) || "volunteer",
       totalHours,
       submissions: counted,
       pendingCount,
+      totalStrikes,
+      eventRows,
     });
   }
 
@@ -205,6 +311,94 @@ export function buildSummaries(
     a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
   );
   return summaries;
+}
+
+// ---------- Events grouped by type (the Events page) ----------
+
+export interface EventGroup {
+  // The event's display name — the grouping identity. A custom "Others" event
+  // gets its own group under its own name, so a new event type creates a new
+  // section automatically.
+  name: string;
+  occurrences: VolunteerEvent[];
+  totalOccurrences: number;
+  totalAttendees: number;
+  totalConfirmed: number;
+  totalHours: number;
+  upcomingCount: number;
+  // Soonest upcoming date, else null.
+  nextDate: string | null;
+  // Most recent past date, else null.
+  lastDate: string | null;
+}
+
+// Credited hours actually logged at one event, from the derived submissions.
+export function eventHours(
+  event: VolunteerEvent,
+  submissions: Submission[],
+  events: VolunteerEvent[]
+): number {
+  const total = submissions
+    .filter((s) => s.eventId === event.id && isCountableSubmission(s, events))
+    .reduce((sum, s) => sum + (s.hours || 0), 0);
+  return Math.round(total * 100) / 100;
+}
+
+// Group events into one section per event type, each listing its dates.
+//
+// Ordering is chosen for an admin scanning the page: groups with something
+// upcoming float to the top (soonest first) because those are the actionable
+// ones; the rest follow by how recently they last ran. Within a group the same
+// rule applies to the individual dates.
+export function groupEventsByName(
+  events: VolunteerEvent[],
+  submissions: Submission[],
+  today: string = todayYmd()
+): EventGroup[] {
+  const byName = new Map<string, VolunteerEvent[]>();
+  for (const e of events) {
+    const key = getEventDisplayName(e);
+    const list = byName.get(key);
+    if (list) list.push(e);
+    else byName.set(key, [e]);
+  }
+
+  const groups: EventGroup[] = [];
+  for (const [name, listRaw] of byName.entries()) {
+    const upcoming = listRaw
+      .filter((e) => e.date >= today)
+      .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
+    const past = listRaw
+      .filter((e) => e.date < today)
+      .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+    const occurrences = [...upcoming, ...past];
+    groups.push({
+      name,
+      occurrences,
+      totalOccurrences: occurrences.length,
+      totalAttendees: occurrences.reduce((n, e) => n + (e.attendance?.length ?? 0), 0),
+      totalConfirmed: occurrences.reduce(
+        (n, e) =>
+          n + (e.attendance?.filter((a) => a.staffCheckin && a.volunteerCheckout).length ?? 0),
+        0
+      ),
+      totalHours:
+        Math.round(
+          occurrences.reduce((sum, e) => sum + eventHours(e, submissions, events), 0) * 100
+        ) / 100,
+      upcomingCount: upcoming.length,
+      nextDate: upcoming[0]?.date ?? null,
+      lastDate: past[0]?.date ?? null,
+    });
+  }
+
+  groups.sort((a, b) => {
+    if (a.nextDate && b.nextDate) return a.nextDate.localeCompare(b.nextDate);
+    if (a.nextDate) return -1;
+    if (b.nextDate) return 1;
+    return (b.lastDate || "").localeCompare(a.lastDate || "");
+  });
+  return groups;
 }
 
 // Sort attendance: admin-added rows first (alphabetical), self-added rows last

@@ -1,12 +1,18 @@
 import { useMemo, useState } from "react";
 import type { Submission } from "../types";
-import type { VolunteerSummary } from "../utils";
-import { displayEventName, formatDate, formatHours, formatTime12h } from "../utils";
+import type { VolunteerEventRow, VolunteerSummary } from "../utils";
+import {
+  STRIKE_WATCHLIST_THRESHOLD,
+  formatDate,
+  formatHours,
+  formatTime12h,
+} from "../utils";
 import {
   downloadEventCertificate,
   downloadVolunteerCertificate,
 } from "../certificate";
 import { Avatar } from "./Avatar";
+import { RoleBadge, StrikeCount } from "./RoleBadge";
 
 interface Props {
   summaries: VolunteerSummary[];
@@ -101,6 +107,12 @@ export function VolunteerTable({ summaries, isAdmin = false }: Props) {
               <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Total Hours
               </th>
+              <th
+                className="px-2 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-500"
+                title="Conduct strikes across every event"
+              >
+                Strikes
+              </th>
               <th className="hidden px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500 sm:table-cell">
                 Certificate
               </th>
@@ -111,7 +123,7 @@ export function VolunteerTable({ summaries, isAdmin = false }: Props) {
             {filtered.length === 0 && (
               <tr>
                 <td
-                  colSpan={6}
+                  colSpan={7}
                   className="px-5 py-10 text-center text-sm text-slate-500"
                 >
                   {summaries.length === 0
@@ -182,7 +194,10 @@ function FragmentRow({
           <div className="flex items-center gap-3">
             <Avatar name={v.name} />
             <div className="min-w-0">
-              <div className="font-medium text-slate-900">{v.name}</div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-medium text-slate-900">{v.name}</span>
+                <RoleBadge role={v.role} size="sm" />
+              </div>
               {/* On mobile, surface grade here since its column is hidden. */}
               <div className="text-xs text-slate-500 sm:hidden">
                 {v.latestGrade !== "—" ? `Grade ${v.latestGrade}` : ""}
@@ -206,6 +221,9 @@ function FragmentRow({
           >
             {formatHours(v.totalHours)} hrs
           </span>
+        </td>
+        <td className="whitespace-nowrap px-2 py-3 text-center">
+          <StrikeCount count={v.totalStrikes} threshold={STRIKE_WATCHLIST_THRESHOLD} />
         </td>
         <td
           className="hidden whitespace-nowrap px-4 py-3 text-right sm:table-cell"
@@ -242,11 +260,18 @@ function FragmentRow({
       </tr>
       {isOpen && (
         <tr className="bg-slate-50/60">
-          <td colSpan={6} className="px-4 py-5 sm:px-5">
+          <td colSpan={7} className="px-4 py-5 sm:px-5">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-medium text-slate-700">
-                {v.submissions.length} event{v.submissions.length === 1 ? "" : "s"} ·{" "}
-                {formatHours(v.totalHours)} hrs
+              <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-slate-700">
+                <span>
+                  {v.submissions.length} event{v.submissions.length === 1 ? "" : "s"} ·{" "}
+                  {formatHours(v.totalHours)} hrs
+                </span>
+                {v.totalStrikes > 0 && (
+                  <span className="text-red-700">
+                    · {v.totalStrikes} strike{v.totalStrikes === 1 ? "" : "s"}
+                  </span>
+                )}
               </div>
               {/* Cumulative certificate — reachable here on phones (the roster
                   column that holds it is hidden below the sm breakpoint). On
@@ -263,7 +288,7 @@ function FragmentRow({
                 />
               </div>
             </div>
-            {v.submissions.length === 0 ? (
+            {v.eventRows.length === 0 ? (
               <div className="rounded-lg border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
                 No service hours logged yet.
               </div>
@@ -281,6 +306,7 @@ function FragmentRow({
                         </>
                       )}
                       <th className="px-4 py-2 text-right font-semibold">Hours</th>
+                      <th className="px-2 py-2 text-center font-semibold">Strikes</th>
                       {isAdmin && (
                         <th className="hidden px-4 py-2 text-left font-semibold md:table-cell">Comments</th>
                       )}
@@ -288,10 +314,10 @@ function FragmentRow({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {v.submissions.map((s) => (
-                      <SubmissionRow
-                        key={s.id}
-                        submission={s}
+                    {v.eventRows.map((row) => (
+                      <EventRow
+                        key={row.key}
+                        row={row}
                         volunteerName={v.name}
                         isAdmin={isAdmin}
                       />
@@ -307,45 +333,74 @@ function FragmentRow({
   );
 }
 
-function SubmissionRow({
-  submission,
+// One event line: hours credited, and the strikes recorded for that same event.
+// A row with no countable hours (checked in but never out) still appears here
+// when it carries a strike, so a strike is never invisible.
+function EventRow({
+  row,
   volunteerName,
   isAdmin,
 }: {
-  submission: Submission;
+  row: VolunteerEventRow;
   volunteerName: string;
   isAdmin: boolean;
 }) {
+  const s: Submission | null = row.submission;
+  // The credited figure is capped for ordinary volunteers; when it differs from
+  // the time actually on site, say so rather than looking like a rounding bug.
+  const capped =
+    isAdmin && s && typeof s.rawHours === "number" && s.rawHours > s.hours;
   return (
     <tr className="align-top">
       <td className="whitespace-nowrap px-4 py-2 text-slate-700">
-        {formatDate(submission.eventDate)}
+        {formatDate(row.eventDate)}
       </td>
-      <td className="px-4 py-2 text-slate-700">{displayEventName(submission)}</td>
+      <td className="px-4 py-2 text-slate-700">{row.eventName}</td>
       {isAdmin && (
         <>
           <td className="hidden whitespace-nowrap px-4 py-2 text-slate-700 sm:table-cell">
-            {formatTime12h(submission.arrivalTime)}
+            {s ? formatTime12h(s.arrivalTime) : <span className="text-slate-300">—</span>}
           </td>
           <td className="hidden whitespace-nowrap px-4 py-2 text-slate-700 sm:table-cell">
-            {formatTime12h(submission.endTime)}
+            {s ? formatTime12h(s.endTime) : <span className="text-slate-300">—</span>}
           </td>
         </>
       )}
       <td className="whitespace-nowrap px-4 py-2 text-right font-medium text-brand-700">
-        {formatHours(submission.hours)}
+        {row.hours === null ? (
+          <span className="text-xs font-normal text-slate-400">not counted</span>
+        ) : (
+          <>
+            {formatHours(row.hours)}
+            {capped && (
+              <span
+                className="ml-1 align-middle text-[10px] font-semibold uppercase tracking-wide text-amber-600"
+                title={`Capped at the event's expected hours (${formatHours(s!.rawHours!)} hrs on site)`}
+              >
+                capped
+              </span>
+            )}
+          </>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-2 py-2 text-center">
+        <StrikeCount count={row.strikes} threshold={STRIKE_WATCHLIST_THRESHOLD} />
       </td>
       {isAdmin && (
         <td className="hidden px-4 py-2 text-slate-600 md:table-cell">
-          {submission.comments || <span className="text-slate-400">—</span>}
+          {s?.comments || <span className="text-slate-400">—</span>}
         </td>
       )}
       <td className="whitespace-nowrap px-4 py-2 text-right">
-        <CertificateButton
-          label="Download"
-          title="Download certification letter for this event"
-          onClick={() => downloadEventCertificate(volunteerName, submission)}
-        />
+        {s ? (
+          <CertificateButton
+            label="Download"
+            title="Download certification letter for this event"
+            onClick={() => downloadEventCertificate(volunteerName, s)}
+          />
+        ) : (
+          <span className="text-xs text-slate-400">—</span>
+        )}
       </td>
     </tr>
   );

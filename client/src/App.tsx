@@ -283,12 +283,18 @@ export default function App() {
               event={currentEvent}
               rosterNames={rosterNames}
               volunteers={volunteers}
-              onBack={() => setView({ kind: "home" })}
               onEventUpdated={(next) =>
                 setEvents((prev) =>
                   prev.map((e) => (e.id === next.id ? next : e))
                 )
               }
+              onHoursChanged={refresh}
+              onBack={() => {
+                // Re-pull the derived hours so the roster reflects everything
+                // that just happened on this event (scans, time edits, cap).
+                refresh();
+                setView({ kind: "home" });
+              }}
               onEventDeleted={() => {
                 setEvents((prev) => prev.filter((e) => e.id !== currentEvent.id));
                 setView({ kind: "home" });
@@ -307,6 +313,7 @@ export default function App() {
               {isAdmin && adminTab === "volunteers" && (
                 <VolunteersPanel
                   volunteers={volunteers}
+                  summaries={summaries}
                   loading={!volunteersLoaded}
                   onChanged={handleVolunteersChanged}
                   onToast={setToast}
@@ -315,8 +322,17 @@ export default function App() {
               {isAdmin && adminTab === "events" && (
                 <EventsPanel
                   events={events}
+                  submissions={submissions}
                   onCreate={() => setCreateEventOpen(true)}
                   onOpenEvent={(id) => setView({ kind: "event", eventId: id })}
+                  onEventUpdated={(next) => {
+                    setEvents((prev) =>
+                      prev.map((e) => (e.id === next.id ? next : e))
+                    );
+                    // Editing an event's expected hours re-derives everyone's
+                    // credited hours server-side, so pull the submissions again.
+                    refresh();
+                  }}
                 />
               )}
             </>

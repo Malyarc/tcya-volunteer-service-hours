@@ -16,6 +16,7 @@ function vol(over: Partial<Volunteer> = {}): Volunteer {
     name: over.name ?? "Aaron Tse",
     email: over.email ?? "",
     phone: over.phone ?? "",
+    role: over.role ?? "volunteer",
     grade: over.grade ?? "",
     customFields: over.customFields ?? {},
     active: over.active ?? true,

@@ -32,15 +32,19 @@ export function ExportButton({ summaries }: Props) {
     const summaryRows = summaries.map((s) => ({
       "Volunteer Name": s.name,
       Grade: s.latestGrade,
+      Role: s.role === "officer" ? "Officer" : "Volunteer",
       "Total Submissions": s.submissions.length,
       "Total Hours": s.totalHours,
+      Strikes: s.totalStrikes,
     }));
     const summarySheet = XLSX.utils.json_to_sheet(summaryRows);
     summarySheet["!cols"] = [
       { wch: 28 },
       { wch: 8 },
+      { wch: 10 },
       { wch: 18 },
       { wch: 14 },
+      { wch: 9 },
     ];
     XLSX.utils.book_append_sheet(wb, summarySheet, "Summary");
 
