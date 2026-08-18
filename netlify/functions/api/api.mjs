@@ -12,19 +12,20 @@ import express from "express";
 import cors from "cors";
 import serverless from "serverless-http";
 import { createRouter, deriveSessionSecret } from "../../../server/src/routes.js";
-import { createStore, isProdLikeEnv } from "../../../server/src/db/create-store.js";
+import {
+  ADMIN_PASSWORD,
+  ADMIN_USERNAME,
+  OFFICER_PASSWORD,
+  OFFICER_USERNAME,
+} from "../../../server/src/accounts.js";
+import { createStore } from "../../../server/src/db/create-store.js";
 
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "1013";
+// Both passcodes come from server/src/accounts.js — see the note in index.js.
+// A stale ADMIN_PASSWORD left in the site's environment is deliberately NOT
+// read: the chapter changes its passcodes in one place, in the repo.
 const SESSION_SECRET =
   process.env.SESSION_SECRET ||
   deriveSessionSecret(ADMIN_USERNAME, ADMIN_PASSWORD);
-
-// Fail closed on a production-like deploy that never set an explicit
-// ADMIN_PASSWORD, so the built-in default can't grant admin / leak PII. Use the
-// non-circular prod signal (Netlify/Lambda/NODE_ENV) rather than the presence of
-// DATABASE_URL, so the guard still fires on a prod deploy that is missing the DB.
-const ADMIN_ENABLED = !(!process.env.ADMIN_PASSWORD && isProdLikeEnv());
 
 // Build the store. createStore() FAILS CLOSED — it throws if this is a
 // production/serverless runtime with no database configured, rather than
@@ -72,8 +73,9 @@ if (storeError) {
       backend,
       adminUsername: ADMIN_USERNAME,
       adminPassword: ADMIN_PASSWORD,
+      officerUsername: OFFICER_USERNAME,
+      officerPassword: OFFICER_PASSWORD,
       sessionSecret: SESSION_SECRET,
-      adminEnabled: ADMIN_ENABLED,
     })
   );
 }

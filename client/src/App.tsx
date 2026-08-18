@@ -3,22 +3,24 @@ import { Header } from "./components/Header";
 import { VolunteerTable } from "./components/VolunteerTable";
 import { ExportButton } from "./components/ExportButton";
 import { Toast } from "./components/Toast";
-import { AdminLoginModal } from "./components/AdminLoginModal";
+import { LoginModal } from "./components/LoginModal";
 import { PasscodeGate } from "./components/PasscodeGate";
 import { EventsPanel } from "./components/admin/EventsPanel";
 import { CreateEventModal } from "./components/admin/CreateEventModal";
 import { EventDetailPage } from "./components/admin/EventDetailPage";
 import { VolunteersPanel } from "./components/admin/VolunteersPanel";
-import { AdminTabs, type AdminTab } from "./components/admin/AdminTabs";
+import { AdminTabs, ALLOWED_TABS, type AdminTab } from "./components/admin/AdminTabs";
 import {
-  checkAdminSession,
+  checkSession,
+  fetchEventOrder,
   fetchEvents,
   fetchRoster,
   fetchSubmissions,
   fetchVolunteers,
 } from "./api";
-import { clearAdminToken, isAdminLoggedIn } from "./auth";
+import { clearSession, getAccountRole } from "./auth";
 import type {
+  AccountRole,
   RosterEntry,
   Submission,
   Volunteer,
@@ -41,6 +43,8 @@ export default function App() {
 
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [events, setEvents] = useState<VolunteerEvent[]>([]);
+  // The admin-defined order of the Events page sections (names, in order).
+  const [eventOrder, setEventOrder] = useState<string[]>([]);
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
   // Whether the FIRST admin volunteers fetch has completed. Prevents the
@@ -50,9 +54,13 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [isAdmin, setIsAdmin] = useState<boolean>(() => isAdminLoggedIn());
+  // Which account is signed in: "admin" (everything), "officer" (open an event
+  // and scan volunteers in/out, nothing else) or null (the public view).
+  const [role, setRole] = useState<AccountRole | null>(() => getAccountRole());
+  const isAdmin = role === "admin";
+  const isOfficer = role === "officer";
   const [view, setView] = useState<View>({ kind: "home" });
-  // Remember the last admin tab across reloads so a freshly created event isn't
+  // Remember the last tab across reloads so a freshly created event isn't
   // hidden behind the default "roster" tab after a refresh.
   const [adminTab, setAdminTab] = useState<AdminTab>(() => {
     try {
@@ -66,7 +74,7 @@ export default function App() {
     return "roster";
   });
 
-  const [adminLoginOpen, setAdminLoginOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
   const [createEventOpen, setCreateEventOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -74,15 +82,21 @@ export default function App() {
     // Load each dataset independently: a transient failure of ONE fetch (e.g. a
     // cold-start 500 on /submissions) must not discard a successful /events
     // load and blank the events panel — that made persisted data look "wiped."
-    const [subsR, evsR, rosR] = await Promise.allSettled([
+    const [subsR, evsR, rosR, orderR] = await Promise.allSettled([
       fetchSubmissions(),
       fetchEvents(),
       fetchRoster(),
+      fetchEventOrder(),
     ]);
     if (subsR.status === "fulfilled") setSubmissions(subsR.value);
     if (evsR.status === "fulfilled") setEvents(evsR.value);
     if (rosR.status === "fulfilled") setRoster(rosR.value);
-    const anyFailed = [subsR, evsR, rosR].some((r) => r.status === "rejected");
+    if (orderR.status === "fulfilled") {
+      setEventOrder(orderR.value.map((r) => r.name));
+    }
+    const anyFailed = [subsR, evsR, rosR, orderR].some(
+      (r) => r.status === "rejected"
+    );
     setError(
       anyFailed
         ? "Some data couldn't be refreshed just now — showing the most recent data. Retrying may help."
@@ -106,24 +120,27 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
-    if (!isAdmin) {
+    if (!role) {
       setVolunteers([]);
       setVolunteersLoaded(false);
       return;
     }
     let cancelled = false;
     (async () => {
-      const status = await checkAdminSession();
+      const status = await checkSession();
       if (cancelled) return;
-      // Only log out on a CONFIRMED non-admin (explicit 401/403). A transient
-      // "unknown" (cold-start 5xx / network blip) keeps the session so the admin
-      // isn't spuriously ejected — which looked like "everything got wiped."
-      if (status === false) {
-        clearAdminToken();
-        setIsAdmin(false);
+      // Only sign out on a CONFIRMED signed-out response (explicit 401/403). A
+      // transient "unknown" (cold-start 5xx / network blip) keeps the session so
+      // nobody is spuriously ejected — which looked like "everything got wiped."
+      if (status === null) {
+        clearSession();
+        setRole(null);
       } else {
-        refreshVolunteers();
-        // Re-fetch events WITH the admin token so the admin sees the full
+        if (status !== "unknown" && status !== role) setRole(status);
+        // The volunteer roster with contact details is admin-only; asking for it
+        // as an officer would just 403.
+        if (status === "admin") refreshVolunteers();
+        // Re-fetch events WITH the token so the signed-in view shows the full
         // attendance (check-in/out times) rather than the public-stripped copy.
         refresh();
       }
@@ -131,7 +148,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [isAdmin, refreshVolunteers, refresh]);
+  }, [role, refreshVolunteers, refresh]);
 
   useEffect(() => {
     function onVisible() {
@@ -144,22 +161,30 @@ export default function App() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [refresh, refreshVolunteers, isAdmin]);
 
-  // If a request 401s and clears the stored token, drop the admin UI + reset to
-  // the roster so the admin isn't stranded in a broken, tokenless admin state.
+  // If a request 401s and clears the stored token, drop the privileged UI +
+  // reset to the roster so nobody is stranded in a broken, tokenless state.
   useEffect(() => {
     function onCleared() {
-      setIsAdmin((was) => {
+      setRole((was) => {
         if (was) {
           setView({ kind: "home" });
           setAdminTab("roster");
-          setToast("Your admin session ended — please sign in again.");
+          setToast("Your session ended — please sign in again.");
         }
-        return false;
+        return null;
       });
     }
     window.addEventListener("ela-tcya-token-cleared", onCleared);
     return () => window.removeEventListener("ela-tcya-token-cleared", onCleared);
   }, []);
+
+  // Keep the active tab valid for the CURRENT account: an officer restoring a
+  // session that last sat on the Volunteers tab must not land on a tab they are
+  // not allowed to open.
+  useEffect(() => {
+    if (!role) return;
+    if (!ALLOWED_TABS(role).includes(adminTab)) setAdminTab("events");
+  }, [role, adminTab]);
 
   useEffect(() => {
     try {
@@ -200,9 +225,9 @@ export default function App() {
     }
   }, [view, currentEvent, loading]);
 
-  function handleAdminLogout() {
-    clearAdminToken();
-    setIsAdmin(false);
+  function handleLogout() {
+    clearSession();
+    setRole(null);
     setView({ kind: "home" });
     setAdminTab("roster");
     setToast("Signed out.");
@@ -221,7 +246,7 @@ export default function App() {
     await Promise.all([refresh(), refreshVolunteers()]);
   }
 
-  const showRoster = !isAdmin || adminTab === "roster";
+  const showRoster = !role || adminTab === "roster";
 
   return (
     <div className="relative min-h-full pb-12">
@@ -237,15 +262,16 @@ export default function App() {
           totalHours={totals.totalHours}
           totalSubmissions={totals.totalSubmissions}
           activeVolunteers={totals.activeVolunteers}
-          isAdmin={isAdmin}
-          onAdminLogin={() => setAdminLoginOpen(true)}
-          onAdminLogout={handleAdminLogout}
+          role={role}
+          onLogin={() => setLoginOpen(true)}
+          onLogout={handleLogout}
         />
 
-        {isAdmin && view.kind === "home" && (
+        {role && view.kind === "home" && (
           <AdminTabs
             active={adminTab}
             onChange={setAdminTab}
+            role={role}
             volunteerCount={volunteers.length}
             eventCount={events.length}
           />
@@ -283,6 +309,7 @@ export default function App() {
               event={currentEvent}
               rosterNames={rosterNames}
               volunteers={volunteers}
+              readOnly={isOfficer}
               onEventUpdated={(next) =>
                 setEvents((prev) =>
                   prev.map((e) => (e.id === next.id ? next : e))
@@ -319,12 +346,15 @@ export default function App() {
                   onToast={setToast}
                 />
               )}
-              {isAdmin && adminTab === "events" && (
+              {role && adminTab === "events" && (
                 <EventsPanel
                   events={events}
                   submissions={submissions}
+                  eventOrder={eventOrder}
+                  readOnly={isOfficer}
                   onCreate={() => setCreateEventOpen(true)}
                   onOpenEvent={(id) => setView({ kind: "event", eventId: id })}
+                  onEventOrderChanged={setEventOrder}
                   onEventUpdated={(next) => {
                     setEvents((prev) =>
                       prev.map((e) => (e.id === next.id ? next : e))
@@ -343,13 +373,20 @@ export default function App() {
           </footer>
         </main>
 
-        <AdminLoginModal
-          open={adminLoginOpen}
-          onClose={() => setAdminLoginOpen(false)}
-          onLoggedIn={() => {
-            setAdminLoginOpen(false);
-            setIsAdmin(true);
-            setToast("Welcome, admin.");
+        <LoginModal
+          open={loginOpen}
+          onClose={() => setLoginOpen(false)}
+          onLoggedIn={(nextRole) => {
+            setLoginOpen(false);
+            setRole(nextRole);
+            // An officer signs in to run a door, so land them on the event list
+            // rather than the roster.
+            setAdminTab(nextRole === "officer" ? "events" : "roster");
+            setToast(
+              nextRole === "officer"
+                ? "Welcome — pick an event, then scan."
+                : "Welcome, admin."
+            );
           }}
         />
 

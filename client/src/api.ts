@@ -1,15 +1,17 @@
 import type {
+  AccountRole,
   Submission,
   VolunteerEvent,
   NewEvent,
   EventPatch,
+  EventOrderEntry,
   Volunteer,
   NewVolunteer,
   VolunteerPatch,
   RosterEntry,
   ScanResult,
 } from "./types";
-import { clearAdminToken, getAdminToken } from "./auth";
+import { clearSession, getAdminToken } from "./auth";
 
 const API_BASE = "/api";
 
@@ -25,7 +27,10 @@ async function handle<T>(res: Response): Promise<T> {
   if (!res.ok) {
     if (res.status === 401) {
       // The token is gone or invalid — clear so the UI re-prompts for login.
-      clearAdminToken();
+      // A 403 is deliberately NOT treated this way: that is a signed-in officer
+      // touching an admin-only route, and signing them out mid-event over it
+      // would be worse than the (already prevented) action they attempted.
+      clearSession();
     }
     let message = `Request failed (${res.status})`;
     let code: string | undefined;
@@ -47,35 +52,39 @@ async function handle<T>(res: Response): Promise<T> {
 
 // ---------- Auth ----------
 
-export async function adminLogin(
-  username: string,
+// Sign in as one of the chapter's two accounts. The server decides the role
+// from the credentials and echoes it back; we never infer it client-side.
+export async function login(
+  role: AccountRole,
   password: string
-): Promise<string> {
+): Promise<{ token: string; role: AccountRole }> {
   const res = await fetch(`${API_BASE}/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username: role, password }),
   });
-  const data = await handle<{ token: string }>(res);
-  return data.token;
+  const data = await handle<{ token: string; role?: AccountRole }>(res);
+  return { token: data.token, role: data.role === "officer" ? "officer" : "admin" };
 }
 
-// Result of probing whether the stored token is still an admin session.
-//  - true      → confirmed admin
-//  - false     → confirmed NOT admin (explicit 401/403) → safe to log out
-//  - "unknown" → transient failure (5xx cold start, network blip) → do NOT log
-//    out; keep the session and try again later. Treating a transient blip as
-//    "logged out" is what makes a healthy app briefly look "wiped."
-export async function checkAdminSession(): Promise<boolean | "unknown"> {
+// Result of probing what the stored token actually is, server-side.
+//  - "admin" / "officer" → confirmed session of that kind
+//  - null                → confirmed signed OUT → safe to drop the session
+//  - "unknown"           → transient failure (5xx cold start, network blip) →
+//    do NOT sign out; keep the session and try again later. Treating a
+//    transient blip as "logged out" is what makes a healthy app look "wiped."
+export async function checkSession(): Promise<AccountRole | null | "unknown"> {
   try {
     const res = await fetch(`${API_BASE}/session`, {
       headers: headers(),
       cache: "no-store",
     });
-    if (res.status === 401 || res.status === 403) return false;
+    if (res.status === 401 || res.status === 403) return null;
     if (!res.ok) return "unknown";
-    const data = (await res.json()) as { admin?: boolean };
-    return Boolean(data.admin);
+    const data = (await res.json()) as { role?: AccountRole | null; admin?: boolean };
+    if (data.role === "admin" || data.role === "officer") return data.role;
+    // Fall back to the pre-officer response shape.
+    return data.admin ? "admin" : null;
   } catch {
     return "unknown";
   }
@@ -227,7 +236,31 @@ export async function removeAttendee(
   return handle<VolunteerEvent>(res);
 }
 
-// ---------- QR check-in / check-out (admin scanner) ----------
+// ---------- Events page order (one entry per event-type section) ----------
+
+export async function fetchEventOrder(): Promise<EventOrderEntry[]> {
+  const res = await fetch(`${API_BASE}/event-order`, {
+    cache: "no-store",
+    headers: headers(),
+  });
+  return handle<EventOrderEntry[]>(res);
+}
+
+// Persist the section order for EVERYONE (admin only). Send the full list of
+// section names in the order they should appear; the server replaces the whole
+// order, so names that no longer exist are pruned.
+export async function saveEventOrder(
+  names: string[]
+): Promise<EventOrderEntry[]> {
+  const res = await fetch(`${API_BASE}/event-order`, {
+    method: "PUT",
+    headers: headers(true),
+    body: JSON.stringify({ names }),
+  });
+  return handle<EventOrderEntry[]>(res);
+}
+
+// ---------- QR check-in / check-out (admin + officer scanner) ----------
 
 export async function checkInByCode(
   eventId: string,

@@ -6,6 +6,14 @@
 import express from "express";
 import crypto from "crypto";
 import { VOLUNTEER_ROLES, normalizeRole } from "./roles.js";
+import {
+  ACCOUNT_ADMIN,
+  ACCOUNT_OFFICER,
+  ADMIN_PASSWORD as BUILT_IN_ADMIN_PASSWORD,
+  ADMIN_USERNAME as BUILT_IN_ADMIN_USERNAME,
+  OFFICER_PASSWORD as BUILT_IN_OFFICER_PASSWORD,
+  OFFICER_USERNAME as BUILT_IN_OFFICER_USERNAME,
+} from "./accounts.js";
 import { MAX_STRIKES } from "./db/schema.js";
 
 function constantTimeEqual(a, b) {
@@ -92,39 +100,139 @@ function publicEvent(event) {
   };
 }
 
+// The projection an OFFICER sees. Officers run the door: they need to see who
+// is on the list and who has already been scanned in or out, so unlike the
+// anonymous projection this keeps the check-in/out timestamps. It still strips
+// the two things an officer has no business holding: the volunteer QR `code`
+// (a check-in credential — an officer must scan the card, not type a code they
+// read off the screen) and the internal `volunteerId`.
+function officerAttendance(a) {
+  return {
+    volunteerName: a.volunteerName,
+    staffCheckin: a.staffCheckin,
+    checkinAt: a.checkinAt ?? null,
+    volunteerCheckout: a.volunteerCheckout,
+    checkoutAt: a.checkoutAt ?? null,
+    selfAdded: a.selfAdded,
+    role: a.role,
+    strikes: a.strikes,
+  };
+}
+
+function officerEvent(event) {
+  return {
+    ...event,
+    attendance: (event.attendance || []).map(officerAttendance),
+  };
+}
+
+// The volunteer record an officer gets back from their OWN scan. The QR they
+// just scanned already carries the code and the name, so echoing those back is
+// not a disclosure — but the stored contact details are, and an officer never
+// needs them.
+function officerVolunteer(v) {
+  return {
+    code: v.code,
+    name: v.name,
+    grade: v.grade || "",
+    role: v.role,
+  };
+}
+
+// A list of event-group names, sanitized: trimmed, de-duplicated, bounded.
+// Unknown names are harmless (the client ignores an order entry with no group),
+// so this validates shape only.
+function parseOrderNames(v) {
+  if (!Array.isArray(v)) return undefined;
+  if (v.length > 500) return undefined;
+  const out = [];
+  const seen = new Set();
+  for (const raw of v) {
+    if (typeof raw !== "string") return undefined;
+    const name = raw.trim().slice(0, 200);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 export function createRouter({
   store,
   // The active storage backend ("postgres" | "memory" | "unknown"), surfaced by
   // /health so a non-durable deploy is detectable by any monitor.
   backend = "unknown",
-  adminUsername,
-  adminPassword,
+  adminUsername = BUILT_IN_ADMIN_USERNAME,
+  adminPassword = BUILT_IN_ADMIN_PASSWORD,
+  officerUsername = BUILT_IN_OFFICER_USERNAME,
+  officerPassword = BUILT_IN_OFFICER_PASSWORD,
   sessionSecret,
-  // When false (production with no explicit ADMIN_PASSWORD), all admin routes
-  // and /login are disabled so a predictable default credential can never grant
-  // access. See the entry points (index.js / api.mjs).
+  // When false, /login and every privileged route are disabled. Kept as an
+  // explicit kill switch (and exercised by the tests); the shipped entry points
+  // pass true because the credentials live in accounts.js, not in deploy
+  // configuration, so there is no "unset password" state to fail closed on.
   adminEnabled = true,
 }) {
+  // Two independent bearer tokens, each an HMAC of that account's credentials.
+  // Distinct derivation prefixes mean the two can never collide even if the
+  // chapter ever picks the same passcode for both.
   const ADMIN_TOKEN = crypto
     .createHmac("sha256", sessionSecret)
     .update(adminUsername + ":" + adminPassword)
     .digest("hex");
+  const OFFICER_TOKEN = crypto
+    .createHmac("sha256", sessionSecret)
+    .update("officer:" + officerUsername + ":" + officerPassword)
+    .digest("hex");
+
+  // The account role a request is authenticated as, or null. Admin is tested
+  // first so a (misconfigured) shared passcode resolves to the stronger role
+  // for its own token only — the tokens themselves stay distinct.
+  function accountRole(req) {
+    if (!adminEnabled) return null;
+    const token = (req.headers["x-admin-token"] || "").toString();
+    if (constantTimeEqual(token, ADMIN_TOKEN)) return ACCOUNT_ADMIN;
+    if (constantTimeEqual(token, OFFICER_TOKEN)) return ACCOUNT_OFFICER;
+    return null;
+  }
 
   function isAdminRequest(req) {
-    if (!adminEnabled) return false;
-    const token = (req.headers["x-admin-token"] || "").toString();
-    return constantTimeEqual(token, ADMIN_TOKEN);
+    return accountRole(req) === ACCOUNT_ADMIN;
+  }
+
+  function isOfficerRequest(req) {
+    return accountRole(req) === ACCOUNT_OFFICER;
+  }
+
+  function disabledResponse(res) {
+    return res.status(503).json({
+      error: "Sign-in is disabled on this deployment.",
+    });
   }
 
   function requireAdmin(req, res, next) {
-    if (!adminEnabled) {
-      return res.status(503).json({
+    if (!adminEnabled) return disabledResponse(res);
+    const role = accountRole(req);
+    if (role === ACCOUNT_ADMIN) return next();
+    // An OFFICER is authenticated, just not allowed here. That is a 403, never
+    // a 401: the client clears its stored token on a 401, so answering 401
+    // would silently sign a working officer out mid-event.
+    if (role === ACCOUNT_OFFICER) {
+      return res.status(403).json({
         error:
-          "Admin is disabled on this deployment. Set ADMIN_PASSWORD to enable it.",
+          "Officers can only check volunteers in and out by scanning their QR code. Ask an admin to make this change.",
+        code: "officer_forbidden",
       });
     }
-    if (isAdminRequest(req)) return next();
     res.status(401).json({ error: "Admin authentication required" });
+  }
+
+  // The QR scanner — the ONE privileged capability officers hold. Both roles
+  // pass; anonymous callers do not.
+  function requireScanner(req, res, next) {
+    if (!adminEnabled) return disabledResponse(res);
+    if (accountRole(req)) return next();
+    res.status(401).json({ error: "Admin or officer authentication required" });
   }
 
   // ---- Login throttle: cap failed attempts per client IP. In-memory (per
@@ -196,12 +304,7 @@ export function createRouter({
   // ---------- Auth ----------
 
   router.post("/login", (req, res) => {
-    if (!adminEnabled) {
-      return res.status(503).json({
-        error:
-          "Admin is disabled on this deployment. Set ADMIN_PASSWORD to enable it.",
-      });
-    }
+    if (!adminEnabled) return disabledResponse(res);
     const key = loginKey(req);
     const wait = loginLockRemaining(key);
     if (wait > 0) {
@@ -216,18 +319,35 @@ export function createRouter({
     if (typeof password !== "string" || password.length === 0) {
       return res.status(400).json({ error: "Password is required" });
     }
-    const userOk = constantTimeEqual(username, adminUsername);
-    const passOk = constantTimeEqual(password, adminPassword);
-    if (!userOk || !passOk) {
+    // Which account do these credentials belong to? Both comparisons always
+    // run so the response time doesn't reveal which half matched.
+    const isAdmin =
+      constantTimeEqual(username, adminUsername) &&
+      constantTimeEqual(password, adminPassword);
+    const isOfficer =
+      constantTimeEqual(username, officerUsername) &&
+      constantTimeEqual(password, officerPassword);
+    if (!isAdmin && !isOfficer) {
       loginRecordFail(key);
       return res.status(401).json({ error: "Invalid username or password" });
     }
     loginRecordSuccess(key);
-    res.json({ token: ADMIN_TOKEN });
+    res.json(
+      isAdmin
+        ? { token: ADMIN_TOKEN, role: ACCOUNT_ADMIN }
+        : { token: OFFICER_TOKEN, role: ACCOUNT_OFFICER }
+    );
   });
 
   router.get("/session", (req, res) => {
-    res.json({ admin: isAdminRequest(req) });
+    const role = accountRole(req);
+    // `admin` is kept for compatibility with anything still reading the old
+    // shape; `role` is the field to branch on.
+    res.json({
+      admin: role === ACCOUNT_ADMIN,
+      officer: role === ACCOUNT_OFFICER,
+      role,
+    });
   });
 
   // ---------- Public roster (names + grade only, no PII) ----------
@@ -382,8 +502,12 @@ export function createRouter({
   router.get("/events", async (req, res) => {
     try {
       const events = await store.listEvents();
-      // Full attendance (codes, ids, timestamps) only for admins.
-      res.json(isAdminRequest(req) ? events : events.map(publicEvent));
+      // Three tiers: admins get everything (codes, ids, timestamps); officers
+      // get the timestamps they need to run the door but no QR codes or ids;
+      // anonymous callers get neither.
+      if (isAdminRequest(req)) return res.json(events);
+      const project = isOfficerRequest(req) ? officerEvent : publicEvent;
+      res.json(events.map(project));
     } catch (err) {
       console.error("Failed to read events", err);
       res.status(500).json({ error: "Failed to read events" });
@@ -582,11 +706,15 @@ export function createRouter({
           reason: "unknown_code",
         });
       }
+      // Officers see the scan through their own projection, so a scan response
+      // can't hand back the contact details or the whole event's QR codes that
+      // GET /events deliberately withheld.
+      const asAdmin = isAdminRequest(req);
       res.json({
         ok: true,
-        volunteer: result.volunteer,
-        attendance: result.attendance,
-        event: result.event,
+        volunteer: asAdmin ? result.volunteer : officerVolunteer(result.volunteer),
+        attendance: asAdmin ? result.attendance : officerAttendance(result.attendance),
+        event: asAdmin ? result.event : officerEvent(result.event),
         alreadyDone: result.alreadyDone === true,
       });
     } catch (err) {
@@ -595,12 +723,47 @@ export function createRouter({
     }
   }
 
-  router.post("/events/:id/checkin", requireAdmin, (req, res) =>
+  router.post("/events/:id/checkin", requireScanner, (req, res) =>
     handleScan(req, res, "checkin")
   );
-  router.post("/events/:id/checkout", requireAdmin, (req, res) =>
+  router.post("/events/:id/checkout", requireScanner, (req, res) =>
     handleScan(req, res, "checkout")
   );
+
+  // ---------- Event order (the Events page section order) ----------
+  //
+  // The Events page groups events into one section per event NAME. Admins can
+  // drag those sections into the order the chapter thinks about them, and that
+  // order is stored server-side so it is the same for every device and every
+  // person. Names with no stored position fall back to the automatic order
+  // (soonest upcoming first) BELOW the ordered ones — a newly created event
+  // type therefore appears without an admin having to re-save anything.
+
+  router.get("/event-order", async (_req, res) => {
+    try {
+      res.json(await store.listEventOrder());
+    } catch (err) {
+      console.error("Failed to read the event order", err);
+      res.status(500).json({ error: "Failed to read the event order" });
+    }
+  });
+
+  router.put("/event-order", requireAdmin, async (req, res) => {
+    const names = parseOrderNames((req.body || {}).names);
+    if (names === undefined) {
+      return res
+        .status(400)
+        .json({ error: "names must be an array of event names (max 500)" });
+    }
+    try {
+      // Replaces the whole order, so names that no longer exist are pruned
+      // rather than accumulating forever. An empty array = back to automatic.
+      res.json(await store.setEventOrder(names));
+    } catch (err) {
+      console.error("Failed to save the event order", err);
+      res.status(500).json({ error: "Failed to save the event order" });
+    }
+  });
 
   // ---------- Admin maintenance ----------
 

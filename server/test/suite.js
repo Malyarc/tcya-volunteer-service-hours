@@ -8,6 +8,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { SEED_VOLUNTEERS } from "../src/data/seed-volunteers.js";
 import {
+  ADMIN_PASSWORD,
+  ADMIN_USERNAME,
+  OFFICER_PASSWORD,
+  OFFICER_USERNAME,
+} from "../src/accounts.js";
+import {
   OFFICER_NAMES,
   RETIRED_MEMBER_NAMES,
 } from "../src/db/data-migrations.js";
@@ -31,10 +37,23 @@ export function runSuite(withServer, label) {
 
   async function adminToken(api) {
     const r = await api.send("POST", "/api/login", {
-      username: "admin",
-      password: "1013",
+      username: ADMIN_USERNAME,
+      password: ADMIN_PASSWORD,
     });
     assert.equal(r.status, 200);
+    assert.equal(r.body.role, "admin");
+    return { "X-Admin-Token": r.body.token };
+  }
+
+  // The chapter's second account: a student leader running the door. The ONLY
+  // thing this token may do is scan a QR to check someone in or out.
+  async function officerToken(api) {
+    const r = await api.send("POST", "/api/login", {
+      username: OFFICER_USERNAME,
+      password: OFFICER_PASSWORD,
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.role, "officer");
     return { "X-Admin-Token": r.body.token };
   }
 
@@ -80,21 +99,62 @@ export function runSuite(withServer, label) {
   test(name("login rejects wrong credentials, accepts correct"), async () => {
     await withServer(async (api) => {
       assert.equal(
-        (await api.send("POST", "/api/login", { username: "admin", password: "x" }))
+        (await api.send("POST", "/api/login", { username: ADMIN_USERNAME, password: "x" }))
           .status,
         401
       );
       assert.equal(
-        (await api.send("POST", "/api/login", { username: "nope", password: "1013" }))
+        (await api.send("POST", "/api/login", { username: "nope", password: ADMIN_PASSWORD }))
           .status,
         401
       );
+      // The two passcodes are NOT interchangeable: each only opens its own
+      // account, so the officer code can never sign someone in as an admin.
+      assert.equal(
+        (await api.send("POST", "/api/login", {
+          username: ADMIN_USERNAME,
+          password: OFFICER_PASSWORD,
+        })).status,
+        401
+      );
+      assert.equal(
+        (await api.send("POST", "/api/login", {
+          username: OFFICER_USERNAME,
+          password: ADMIN_PASSWORD,
+        })).status,
+        401
+      );
       const ok = await api.send("POST", "/api/login", {
-        username: "admin",
-        password: "1013",
+        username: ADMIN_USERNAME,
+        password: ADMIN_PASSWORD,
       });
       assert.equal(ok.status, 200);
       assert.equal(typeof ok.body.token, "string");
+      assert.equal(ok.body.role, "admin");
+
+      const off = await api.send("POST", "/api/login", {
+        username: OFFICER_USERNAME,
+        password: OFFICER_PASSWORD,
+      });
+      assert.equal(off.status, 200);
+      assert.equal(off.body.role, "officer");
+      assert.notEqual(off.body.token, ok.body.token, "the two accounts get different tokens");
+    });
+  });
+
+  test(name("/session reports which account a token belongs to"), async () => {
+    await withServer(async (api) => {
+      const anon = await api.get("/api/session");
+      assert.deepEqual(anon.body, { admin: false, officer: false, role: null });
+
+      const asAdmin = await api.get("/api/session", await adminToken(api));
+      assert.deepEqual(asAdmin.body, { admin: true, officer: false, role: "admin" });
+
+      const asOfficer = await api.get("/api/session", await officerToken(api));
+      assert.deepEqual(asOfficer.body, { admin: false, officer: true, role: "officer" });
+
+      const bogus = await api.get("/api/session", { "X-Admin-Token": "deadbeef" });
+      assert.deepEqual(bogus.body, { admin: false, officer: false, role: null });
     });
   });
 
@@ -351,13 +411,17 @@ export function runSuite(withServer, label) {
     });
   });
 
-  test(name("QR check-in requires admin and a code"), async () => {
+  test(name("QR check-in requires a signed-in scanner and a code"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const event = await makeEvent(api, auth);
       const code = await codeFor(api, auth, V1);
       assert.equal(
         (await api.send("POST", `/api/events/${event.id}/checkin`, { code })).status,
+        401
+      );
+      assert.equal(
+        (await api.send("POST", `/api/events/${event.id}/checkin`, { code }, { "X-Admin-Token": "nope" })).status,
         401
       );
       assert.equal(
@@ -1320,6 +1384,255 @@ export function runSuite(withServer, label) {
         (s) => s.volunteerName === V1
       );
       assert.equal(adm.rawHours, 4, "the admin can see why the credit was capped");
+    });
+  });
+
+  // ---------------- The officer account (scanner-only access) ----------------
+  //
+  // The chapter's rule: an officer opens an event an admin already made and
+  // scans QR codes. Nothing else. These tests are the enforcement — every
+  // mutating admin route is asserted to reject the officer token.
+
+  test(name("an officer can check volunteers in and out by QR"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, V1);
+
+      const inR = await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+      assert.equal(inR.status, 200, JSON.stringify(inR.body));
+      assert.equal(inR.body.attendance.staffCheckin, true);
+      assert.ok(inR.body.attendance.checkinAt, "the scan stamped a check-in time");
+
+      const outR = await api.send("POST", `/api/events/${event.id}/checkout`, { code }, officer);
+      assert.equal(outR.status, 200);
+      assert.equal(outR.body.attendance.volunteerCheckout, true);
+
+      // …and the hours the officer's two scans produced are real, derived hours.
+      const sub = (await api.get("/api/submissions", auth)).body.find(
+        (x) => x.volunteerName === V1 && x.eventId === event.id
+      );
+      assert.ok(sub, "the officer's scans derived a submission");
+    });
+  });
+
+  test(name("an officer CANNOT create, edit or delete events"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+
+      const create = await api.send(
+        "POST",
+        "/api/events",
+        { name: "Culture - Beach Cleanup", date: "2026-04-01" },
+        officer
+      );
+      assert.equal(create.status, 403);
+      assert.equal(create.body.code, "officer_forbidden");
+
+      assert.equal(
+        (await api.send("PATCH", `/api/events/${event.id}`, { date: "2026-04-02" }, officer)).status,
+        403
+      );
+      assert.equal(
+        (await api.send("DELETE", `/api/events/${event.id}`, undefined, officer)).status,
+        403
+      );
+      // Nothing changed.
+      const after = (await api.get("/api/events", auth)).body;
+      assert.equal(after.length, 1);
+      assert.equal(after[0].date, "2026-03-15");
+    });
+  });
+
+  test(name("an officer CANNOT edit hours, times, strikes or the attendance list"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V1] }, auth);
+
+      // Add / remove attendees.
+      assert.equal(
+        (await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V2] }, officer)).status,
+        403
+      );
+      assert.equal(
+        (await api.send("DELETE", `/api/events/${event.id}/attendance`, { volunteerName: V1 }, officer)).status,
+        403
+      );
+      // Hand-set a check-in/out time — the override the chapter explicitly
+      // wants officers locked out of.
+      const patch = await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, checkinAt: "2026-03-15T16:00:00.000Z", checkoutAt: "2026-03-15T23:00:00.000Z" },
+        officer
+      );
+      assert.equal(patch.status, 403);
+      assert.equal(patch.body.code, "officer_forbidden");
+      // Strikes are a judgement call — admins only.
+      assert.equal(
+        (await api.send("PATCH", `/api/events/${event.id}/attendance`, { volunteerName: V1, strikes: 1 }, officer)).status,
+        403
+      );
+
+      const row = (await api.get("/api/events", auth)).body[0].attendance;
+      assert.equal(row.length, 1, "the roster for this event is untouched");
+      assert.equal(row[0].volunteerName, V1);
+      assert.equal(row[0].checkinAt, null, "no time was forged");
+      assert.equal(row[0].strikes, 0);
+      assert.equal((await api.get("/api/submissions", auth)).body.length, 0, "no hours were created");
+    });
+  });
+
+  test(name("an officer CANNOT read or change the volunteer roster, exports or resets"), async () => {
+    await withServer(async (api) => {
+      const officer = await officerToken(api);
+      assert.equal((await api.get("/api/volunteers", officer)).status, 403);
+      assert.equal((await api.send("POST", "/api/volunteers", { name: "X" }, officer)).status, 403);
+      assert.equal((await api.send("PATCH", "/api/volunteers/whatever", { grade: "12" }, officer)).status, 403);
+      assert.equal((await api.send("DELETE", "/api/volunteers/whatever", undefined, officer)).status, 403);
+      assert.equal((await api.get("/api/admin/export", officer)).status, 403);
+      assert.equal((await api.send("POST", "/api/admin/import", { volunteers: [] }, officer)).status, 403);
+      assert.equal((await api.send("POST", "/api/admin/reset", { confirm: "RESET" }, officer)).status, 403);
+      // Still on the roster afterwards.
+      assert.ok((await api.get("/api/roster")).body.length > 0);
+    });
+  });
+
+  test(name("an officer sees check-in times but never QR codes or contact details"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, V1);
+      const scan = await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+      assert.equal(scan.status, 200);
+      // The scan echoes back the card they just scanned — name + code — but
+      // none of the stored contact details.
+      assert.equal(scan.body.volunteer.name, V1);
+      assert.equal(scan.body.volunteer.email, undefined);
+      assert.equal(scan.body.volunteer.phone, undefined);
+      assert.equal(scan.body.volunteer.customFields, undefined);
+      assert.equal(scan.body.event.attendance[0].code, undefined);
+
+      const ev = (await api.get("/api/events", officer)).body[0];
+      const row = ev.attendance.find((a) => a.volunteerName === V1);
+      assert.ok(row.checkinAt, "an officer running the door sees who is already in");
+      assert.equal(row.code, undefined, "…but cannot harvest QR codes from the list");
+      assert.equal(row.volunteerId, undefined);
+      assert.equal(JSON.stringify(ev).includes("TCYA-0001"), false);
+    });
+  });
+
+  // ---------------- Events page order ----------------
+
+  test(name("the events page order is empty until an admin sets one"), async () => {
+    await withServer(async (api) => {
+      const r = await api.get("/api/event-order");
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body, []);
+    });
+  });
+
+  test(name("an admin can save the event order; everyone reads the same one"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const saved = await api.send(
+        "PUT",
+        "/api/event-order",
+        { names: ["Culture - Beach Cleanup", "Recycling", "Others - Bake Sale"] },
+        auth
+      );
+      assert.equal(saved.status, 200);
+      assert.deepEqual(saved.body, [
+        { name: "Culture - Beach Cleanup", position: 0 },
+        { name: "Recycling", position: 1 },
+        { name: "Others - Bake Sale", position: 2 },
+      ]);
+      // Anonymous + officer readers see the identical order (it is not PII).
+      assert.deepEqual((await api.get("/api/event-order")).body, saved.body);
+      assert.deepEqual(
+        (await api.get("/api/event-order", await officerToken(api))).body,
+        saved.body
+      );
+
+      // Saving again REPLACES the order (so renamed/removed groups are pruned)
+      // and re-indexes positions from 0.
+      const again = await api.send("PUT", "/api/event-order", { names: ["Recycling"] }, auth);
+      assert.deepEqual(again.body, [{ name: "Recycling", position: 0 }]);
+      assert.deepEqual((await api.get("/api/event-order")).body, again.body);
+
+      // An empty list clears it — back to the automatic order.
+      assert.deepEqual((await api.send("PUT", "/api/event-order", { names: [] }, auth)).body, []);
+      assert.deepEqual((await api.get("/api/event-order")).body, []);
+    });
+  });
+
+  test(name("saving the event order trims, de-dupes and validates"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      assert.deepEqual(
+        (await api.send("PUT", "/api/event-order", { names: ["  Recycling  ", "Recycling", "", "   "] }, auth)).body,
+        [{ name: "Recycling", position: 0 }]
+      );
+      assert.equal((await api.send("PUT", "/api/event-order", { names: "Recycling" }, auth)).status, 400);
+      assert.equal((await api.send("PUT", "/api/event-order", { names: [1, 2] }, auth)).status, 400);
+      assert.equal((await api.send("PUT", "/api/event-order", {}, auth)).status, 400);
+    });
+  });
+
+  test(name("only an admin can change the event order"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      await api.send("PUT", "/api/event-order", { names: ["Recycling"] }, auth);
+      assert.equal(
+        (await api.send("PUT", "/api/event-order", { names: ["Hacked"] })).status,
+        401
+      );
+      assert.equal(
+        (await api.send("PUT", "/api/event-order", { names: ["Hacked"] }, await officerToken(api))).status,
+        403
+      );
+      assert.deepEqual((await api.get("/api/event-order")).body, [
+        { name: "Recycling", position: 0 },
+      ]);
+    });
+  });
+
+  test(name("export/import round-trips the event order, and a payload without one leaves it alone"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      await api.send("PUT", "/api/event-order", { names: ["Recycling", "Culture - Beach Cleanup"] }, auth);
+
+      const dump = (await api.get("/api/admin/export", auth)).body;
+      assert.deepEqual(dump.eventOrder, ["Recycling", "Culture - Beach Cleanup"]);
+
+      // A volunteers-only import must not disturb it (same by-category rule as
+      // events and submissions).
+      await api.send("POST", "/api/admin/import", { volunteers: dump.volunteers }, auth);
+      assert.deepEqual((await api.get("/api/event-order")).body, [
+        { name: "Recycling", position: 0 },
+        { name: "Culture - Beach Cleanup", position: 1 },
+      ]);
+
+      // A payload that DOES carry an order replaces it.
+      await api.send("POST", "/api/admin/import", { events: [], eventOrder: ["Culture - Beach Cleanup"] }, auth);
+      assert.deepEqual((await api.get("/api/event-order")).body, [
+        { name: "Culture - Beach Cleanup", position: 0 },
+      ]);
+    });
+  });
+
+  test(name("admin reset clears the event order along with the events"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      await api.send("PUT", "/api/event-order", { names: ["Recycling"] }, auth);
+      await api.send("POST", "/api/admin/reset", { confirm: "RESET" }, auth);
+      assert.deepEqual((await api.get("/api/event-order")).body, []);
     });
   });
 }

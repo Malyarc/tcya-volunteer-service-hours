@@ -1,8 +1,67 @@
 # Handoff — ELA TCYA Volunteer Service Hours
 
-Single source of truth for the project's current state. Last updated: 2026-08-16.
+Single source of truth for the project's current state. Last updated: 2026-08-17.
 
-## Round 7 (latest) — officers + hours cap, strikes, Events redesign, scan flash
+## Round 8 (latest) — a separate Officer login, plus a reorderable Events page
+
+Three chapter-requested changes, one commit. Green bar: server memory **103
+pass**, **live-Postgres parity 180 pass**, client **60 pass**, build clean —
+every exit code captured. Verified live in the running app (admin AND officer,
+1280 px and 390 px).
+
+### 1. Two accounts instead of one
+
+`server/src/accounts.js` now owns both sign-ins. **Admin `0314`** does everything
+it did before. **Officer `1013`** can do exactly one privileged thing: open an
+event an admin already created and check volunteers in / out by scanning their
+QR code.
+
+- `/login` returns `{token, role}`; the two tokens are HMACs with distinct
+  derivation prefixes, so the passcodes are not interchangeable (proved in the
+  suite). `/session` reports `{admin, officer, role}`.
+- `requireScanner` (admin OR officer) guards ONLY `POST /events/:id/checkin` and
+  `/checkout`. Everything else keeps `requireAdmin`, which answers an officer
+  **403** — deliberately not 401, because the client clears its token on a 401
+  and that would sign an officer out mid-event.
+- Officers never receive QR codes, volunteer ids, emails or phone numbers:
+  `officerEvent` / `officerAttendance` / `officerVolunteer` project every
+  response they can reach. They DO see check-in/out times — they run the door.
+- UI: green **Officer** badge, only Roster + Events tabs, a read-only Events page
+  (no create / edit / reorder), a read-only event page whose only controls are
+  Back, Sign Out and **Scan QR**, and a camera-only scanner — the typed-ID and
+  pick-a-name fallbacks are admin tools, since they check someone in without
+  their card present.
+- **The passcodes now live in the repo, not in deploy config.** The chapter chose
+  this so a redeploy is the only step to rotate them and nothing has to be set in
+  Netlify; a stale `ADMIN_PASSWORD` in the site environment is deliberately
+  ignored. They are 4-digit shared codes in a PUBLIC repo — a "who's holding the
+  iPad" control, not a secret. To rotate: edit `accounts.js`, redeploy.
+
+### 2. Events page — no dropdown where there is nothing to drop down
+
+A section with a single date renders as a plain heading: no chevron, nothing to
+click that does nothing. `isCollapsibleGroup` in `utils.ts` is the single rule,
+shared by the page and its tests. Sections with 2+ dates collapse as before, and
+"Collapse all" now only counts the sections that can actually collapse.
+
+### 3. Admins can set the order of the event list, permanently
+
+Drag a section by its handle, or use the up/down arrows (which is what works on a
+phone and with a keyboard). The order is saved server-side in a new `event_order`
+table and is the same for everyone, including officers and a fresh browser.
+
+- `GET /event-order` (public read) / `PUT /event-order` (admin) — the PUT replaces
+  the whole order, so renamed or deleted sections are pruned rather than piling up.
+- `sortEventGroups` puts placed sections first in the saved order and leaves
+  everything else in the automatic order BELOW it, so a brand-new event type can
+  never be hidden by a stale order.
+- Saving is optimistic and rolls back with an error banner if the request fails.
+  "Reset order" clears it back to automatic. Reordering is hidden while a search
+  is filtering the list (saving a filtered subset would drop the rest).
+- `exportAll`/`importAll` round-trip the order by category, and `reset()` clears
+  it along with the events. Both stores implement it identically.
+
+## Round 7 — officers + hours cap, strikes, Events redesign, scan flash
 
 Five chapter-requested features, shipped in ONE commit (Netlify bills per build).
 Green bar: server memory **91 pass**, **live-Postgres parity 156 pass**, client
@@ -245,9 +304,14 @@ detail add/toggle/edit-times (hours derive) + scanner manual entry (branded ID).
   `/admin/reset`, `npm run reset`, or the parity suite against prod. Updates happen
   only via the admin UI (add/edit volunteers, scan/edit attendance → hours derive)
   or a careful assisted change.
-- **TOP ACTION — set a strong `ADMIN_PASSWORD`** (+ `SESSION_SECRET`) in Netlify env.
-  It is still the default `1013`; anyone who knows it has full edit/wipe power over
-  the now-real data. This is the #1 data-loss/security vector.
+- **Passcode posture (decided 2026-08-17, round 8):** admin `0314` and officer
+  `1013` live in `server/src/accounts.js`, in a PUBLIC repo, and deploy config no
+  longer supplies them. The chapter chose this so sign-in needs zero setup. The
+  residual risk is real and accepted: anyone who reads the repo and finds the site
+  can pass the `1994` gate and sign in as admin, which is full edit/wipe power
+  over real data. Mitigations if that ever matters: make the repo private, or move
+  the passcodes back behind `SESSION_SECRET`-style env config. Neon PITR below is
+  the backstop that makes a wipe recoverable.
 - **Enable Neon PITR / automated backups** on the primary branch as an
   app-independent safety net.
 
@@ -290,7 +354,8 @@ Hardening (all landed, green bar passing):
    expiring/preview branch) and is scoped to ALL Netlify deploy contexts.
 2. **Provision a throwaway Neon branch/DB** with `test`/`scratch` in its name; use
    its URL as `TEST_DATABASE_URL` for the parity gate. Never use the prod string.
-3. **Set a strong `ADMIN_PASSWORD`** (+ `SESSION_SECRET`) — still `1013` on prod.
+3. **Decide on the passcode posture** — see "Passcode posture" above. The codes
+   ship in the repo by design now; making the repo private is the cheap hardening.
 4. **Enable Neon PITR / automated backups** on the primary as an app-independent
    safety net.
 
@@ -394,8 +459,8 @@ A large feature + storage migration, built, audited, code-reviewed, and verified
 
 ## Deploy checklist
 
-1. Netlify env: `DATABASE_URL` (Neon pooled string), `ADMIN_PASSWORD`,
-   `SESSION_SECRET`.
+1. Netlify env: `DATABASE_URL` (Neon pooled string); optionally `SESSION_SECRET`.
+   Sign-in passcodes come from `server/src/accounts.js`, not the environment.
 2. `cd server && TEST_DATABASE_URL=<throwaway> npm test` (parity gate).
 3. Push to `main` → Netlify builds. First request creates schema + seeds roster.
 4. Smoke-test: `/api/health`, `/api/roster`, admin login, create event, scan.

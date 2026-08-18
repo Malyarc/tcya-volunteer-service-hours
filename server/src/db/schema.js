@@ -97,6 +97,17 @@ export const SCHEMA_STATEMENTS = [
   // explain the difference instead of looking like a bug.
   `ALTER TABLE submissions ADD COLUMN IF NOT EXISTS raw_hours numeric`,
 
+  // The Events page's section order. One row per event GROUP NAME (an event's
+  // display name — its custom name for an "Others" event), holding the position
+  // an admin dragged it to. Deliberately keyed by NAME, not by event id: the
+  // page orders event TYPES, and a type outlives any one of its dates.
+  // A name with no row here simply falls back to the automatic order, so this
+  // table is optional data — losing it degrades to the previous behavior.
+  `CREATE TABLE IF NOT EXISTS event_order (
+     name     text PRIMARY KEY,
+     position integer NOT NULL
+   )`,
+
   // One-time data migrations that have already been applied (see
   // data-migrations.js). Presence of the row is the guard — a migration must
   // never re-run and undo an admin's later edit.

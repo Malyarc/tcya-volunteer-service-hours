@@ -101,9 +101,29 @@ through the admin UI.
 | Key | Purpose |
 |---|---|
 | `DATABASE_URL` | **Neon (or any Postgres) connection string.** When set, the app uses Postgres. When absent, it falls back to an **in-memory** store (fine for a quick local run / tests, but **not persisted**). |
-| `ADMIN_USERNAME` | Admin login (default `admin`). |
-| `ADMIN_PASSWORD` | Admin login (default `1013` — change for production). |
-| `SESSION_SECRET` | Optional; signs admin tokens. Defaults to a value derived from the credentials. |
+| `SESSION_SECRET` | Optional; signs the session tokens. Defaults to a value derived from the credentials. Setting (or changing) it signs everyone out. |
+
+**Sign-in is not configured here.** The chapter's two accounts live in
+`server/src/accounts.js`, so every deployment has the same working sign-in with
+nothing to set up. `ADMIN_USERNAME` / `ADMIN_PASSWORD` are no longer read — a
+leftover value in a site's environment is deliberately ignored.
+
+## The two accounts
+
+| Account | Passcode | What it can do |
+|---|---|---|
+| **Admin** | `0314` | Everything: create/edit/delete events, manage the roster, correct check-in/out times, record strikes, reorder the events page, export/import. |
+| **Officer** | `1013` | Open an event an admin already created and check volunteers in / out **by scanning their QR**. Nothing else — no edits, no manual times, no strikes, no roster access. |
+
+Both are enforced server-side, not just hidden in the UI: an officer token gets
+a `403` from every admin route (never a `401`, so an officer is not signed out
+mid-event for touching one). Officers also never receive volunteers' QR codes or
+contact details — see `officerEvent` / `officerVolunteer` in `routes.js`.
+
+To change a passcode, edit `server/src/accounts.js` and redeploy. These are
+shared 4-digit codes in a public repo, so they are a "who's holding the iPad"
+control, not a secret: the roster behind them is names, grades and hours, and
+the whole app already sits behind the `1994` passcode gate.
 
 Get a `DATABASE_URL` from the [Neon console](https://console.neon.tech) →
 your project → **Connection string** (use the pooled `-pooler` host). Never
@@ -136,14 +156,13 @@ cd server && DATABASE_URL='postgres://…' npm run migrate
    build command, publish dir, and the `/api/*` → function redirect.
 2. **Site configuration → Environment variables**, set:
    - `DATABASE_URL` = your Neon connection string
-   - `ADMIN_USERNAME`, `ADMIN_PASSWORD` (and optionally `SESSION_SECRET`)
+   - optionally `SESSION_SECRET`
 3. Deploy. The function connects to Neon over HTTP (no persistent pool), creates
    the schema and seeds the roster on first request.
 
 ## Deploy to EC2
 
-Same as before, but set `DATABASE_URL` (and admin vars) in the systemd unit /
-PM2 env. Express serves both the API and the built client on one port. Run
+Same as before, but set `DATABASE_URL` in the systemd unit / PM2 env. Express serves both the API and the built client on one port. Run
 `cd server && npm run migrate` once (optional) to pre-create the schema.
 
 ## Migrating existing data into Neon

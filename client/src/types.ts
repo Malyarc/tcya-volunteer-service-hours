@@ -2,6 +2,20 @@
 // (they set up before and clean up after, and that time counts).
 export type VolunteerRole = "volunteer" | "officer";
 
+// Which account someone signed in with. A DIFFERENT axis from VolunteerRole
+// (which is about the hours cap):
+//   "admin"   — full access.
+//   "officer" — may only open an event an admin created and check volunteers
+//               in / out by scanning their QR. No edits of any kind.
+//   null      — signed out; the public, passcode-gated view.
+export type AccountRole = "admin" | "officer";
+
+// One event-type section's saved position on the Events page.
+export interface EventOrderEntry {
+  name: string;
+  position: number;
+}
+
 export interface Submission {
   id: string;
   eventId: string;

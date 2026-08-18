@@ -26,6 +26,9 @@ export function createMemoryStore(seed) {
   let events = [];
   let attendance = [];
   let submissions = [];
+  // Ordered list of event-group names an admin dragged into place. See
+  // listEventOrder / setEventOrder.
+  let eventOrder = [];
   let archivedRecords = [];
   const appliedMigrations = new Set();
   let codeSeq = 0;
@@ -54,6 +57,9 @@ export function createMemoryStore(seed) {
       expectedHours: normalizeExpectedHours(e.expectedHours),
     }));
     submissions = (seed.submissions || []).map((s) => ({ ...s }));
+    eventOrder = (seed.eventOrder || []).filter(
+      (n) => typeof n === "string" && n.trim()
+    );
     // A seed may express attendance inline on events (old shape) — flatten it.
     for (const e of events) {
       for (const a of e.attendance || []) {
@@ -599,12 +605,39 @@ export function createMemoryStore(seed) {
       .map((s) => ({ ...s }));
   }
 
+  // ---------- event order (the Events page section order) ----------
+
+  // Stored as an ordered list of event-group NAMES. Positions are implicit
+  // (index), so the list can never hold two rows claiming the same slot — the
+  // Postgres store persists the index into `position` and reads it back sorted,
+  // giving the same guarantee.
+  async function listEventOrder() {
+    return eventOrder.map((name, position) => ({ name, position }));
+  }
+
+  async function setEventOrder(names) {
+    // Replace wholesale: names that no longer exist are pruned instead of
+    // accumulating, and an empty list means "back to the automatic order".
+    const seen = new Set();
+    eventOrder = [];
+    for (const raw of Array.isArray(names) ? names : []) {
+      const name = typeof raw === "string" ? raw.trim() : "";
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      eventOrder.push(name);
+    }
+    return listEventOrder();
+  }
+
   // ---------- admin ----------
 
   async function reset() {
     events = [];
     attendance = [];
     submissions = [];
+    // With no events left there are no groups to order; keeping stale names
+    // would silently re-impose an old order on whatever is created next.
+    eventOrder = [];
   }
 
   async function exportAll() {
@@ -612,6 +645,7 @@ export function createMemoryStore(seed) {
       volunteers: await listVolunteers(),
       events: await listEvents(),
       submissions: await listSubmissions(),
+      eventOrder: (await listEventOrder()).map((r) => r.name),
     };
   }
 
@@ -721,6 +755,11 @@ export function createMemoryStore(seed) {
         submittedAt: s.submittedAt || nowIso(),
       });
     }
+    // Same by-category rule as the rest of the import: only replace the Events
+    // page order when the payload actually carries one.
+    if (Array.isArray(payload?.eventOrder)) {
+      await setEventOrder(payload.eventOrder);
+    }
     return exportAll();
   }
 
@@ -799,6 +838,8 @@ export function createMemoryStore(seed) {
     patchAttendance,
     removeAttendance,
     listSubmissions,
+    listEventOrder,
+    setEventOrder,
     reset,
     exportAll,
     importAll,

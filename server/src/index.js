@@ -8,6 +8,12 @@ import path from "path";
 import fssync from "fs";
 import { fileURLToPath } from "url";
 import { createRouter, deriveSessionSecret } from "./routes.js";
+import {
+  ADMIN_PASSWORD,
+  ADMIN_USERNAME,
+  OFFICER_PASSWORD,
+  OFFICER_USERNAME,
+} from "./accounts.js";
 import { createStore } from "./db/create-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,23 +22,16 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 4000;
 const CLIENT_DIST = path.resolve(__dirname, "..", "..", "client", "dist");
 
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "1013";
+// The two chapter passcodes are owned by the app (server/src/accounts.js), not
+// by deploy configuration, so every deployment has the same working admin and
+// officer sign-in with nothing to set. SESSION_SECRET stays overridable: it is
+// not a credential anyone types, only the key the session tokens are HMAC'd
+// with, and setting it invalidates existing tokens on rotation.
 const SESSION_SECRET =
   process.env.SESSION_SECRET ||
   deriveSessionSecret(ADMIN_USERNAME, ADMIN_PASSWORD);
 
 const { store, backend } = createStore();
-
-// Fail closed: if this is a real deployment (a database is configured, or
-// NODE_ENV=production) and ADMIN_PASSWORD was left at the built-in default,
-// disable admin entirely so the predictable default credential can never grant
-// access or leak volunteer PII. Local dev (no DATABASE_URL) keeps the default
-// for convenience.
-const USING_DEFAULT_PASSWORD = !process.env.ADMIN_PASSWORD;
-const IS_PROD_LIKE =
-  !!process.env.DATABASE_URL || process.env.NODE_ENV === "production";
-const ADMIN_ENABLED = !(USING_DEFAULT_PASSWORD && IS_PROD_LIKE);
 
 const app = express();
 app.use(cors());
@@ -48,8 +47,9 @@ app.use(
     backend,
     adminUsername: ADMIN_USERNAME,
     adminPassword: ADMIN_PASSWORD,
+    officerUsername: OFFICER_USERNAME,
+    officerPassword: OFFICER_PASSWORD,
     sessionSecret: SESSION_SECRET,
-    adminEnabled: ADMIN_ENABLED,
   })
 );
 
@@ -72,20 +72,9 @@ store
           "WARNING: no DATABASE_URL set — using in-memory storage (data is NOT persisted across restarts). Set DATABASE_URL to your Neon connection string."
         );
       }
-      if (!ADMIN_ENABLED) {
-        console.log(
-          `Admin login DISABLED: ADMIN_PASSWORD is unset on a production-like deployment. Set ADMIN_PASSWORD (and ideally SESSION_SECRET) to enable admin access.`
-        );
-      } else {
-        const usingDefaults = !process.env.ADMIN_PASSWORD;
-        console.log(
-          `Admin login enabled as user "${ADMIN_USERNAME}"${
-            usingDefaults
-              ? " (DEFAULT password — set ADMIN_PASSWORD for production)"
-              : " (credentials set via environment)"
-          }`
-        );
-      }
+      console.log(
+        `Sign-in enabled for "${ADMIN_USERNAME}" (full access) and "${OFFICER_USERNAME}" (QR check-in/out only). Passcodes live in server/src/accounts.js.`
+      );
     });
   })
   .catch((err) => {

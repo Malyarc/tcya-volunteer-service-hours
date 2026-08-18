@@ -31,6 +31,10 @@ interface Props {
   event: VolunteerEvent;
   rosterNames: string[];
   volunteers: Volunteer[];
+  // Officer mode. An officer opens an event to run the door: they may scan
+  // volunteers in and out and nothing else, so every editing control is absent
+  // (the server rejects the same actions — this keeps the page honest).
+  readOnly?: boolean;
   onBack: () => void;
   onEventUpdated: (next: VolunteerEvent) => void;
   // Called when a change may have altered credited hours (a schedule edit
@@ -43,6 +47,7 @@ export function EventDetailPage({
   event,
   rosterNames,
   volunteers,
+  readOnly = false,
   onBack,
   onEventUpdated,
   onHoursChanged,
@@ -273,17 +278,19 @@ export function EventDetailPage({
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => setEditingSchedule((v) => !v)}
-                aria-expanded={editingSchedule}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur-sm transition hover:bg-white/25"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
-                  <path d="M12 20h9" />
-                  <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-                </svg>
-                {editingSchedule ? "Close" : "Edit Details"}
-              </button>
+              {!readOnly && (
+                <button
+                  onClick={() => setEditingSchedule((v) => !v)}
+                  aria-expanded={editingSchedule}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur-sm transition hover:bg-white/25"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                  </svg>
+                  {editingSchedule ? "Close" : "Edit Details"}
+                </button>
+              )}
               <button
                 onClick={() => setScannerOpen(true)}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-brand-700 shadow ring-1 ring-white/40 transition hover:bg-brand-50"
@@ -294,24 +301,26 @@ export function EventDetailPage({
                 </svg>
                 Scan QR
               </button>
-              <button
-                onClick={handleDeleteEvent}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-red-500/90 px-3 py-1.5 text-xs font-semibold text-white shadow ring-1 ring-red-400/40 transition hover:bg-red-500"
-                disabled={busy}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
-                  <polyline points="3 6 5 6 21 6" />
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-                  <path d="M10 11v6M14 11v6" />
-                  <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-                </svg>
-                Delete Event
-              </button>
+              {!readOnly && (
+                <button
+                  onClick={handleDeleteEvent}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-red-500/90 px-3 py-1.5 text-xs font-semibold text-white shadow ring-1 ring-red-400/40 transition hover:bg-red-500"
+                  disabled={busy}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                    <path d="M10 11v6M14 11v6" />
+                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                  </svg>
+                  Delete Event
+                </button>
+              )}
             </div>
           </div>
         </div>
 
-        {editingSchedule && (
+        {editingSchedule && !readOnly && (
           <EventScheduleEditor
             event={event}
             onCancel={() => setEditingSchedule(false)}
@@ -334,8 +343,10 @@ export function EventDetailPage({
         <div className="border-t border-slate-100 px-6 py-2.5 text-xs text-slate-500">
           <span className="font-semibold text-slate-600">Note:</span> a volunteer's{" "}
           <em>service hours</em> are credited automatically from their check-in and
-          check-out times (hours = check-out − check-in). Scan their QR or set the
-          times by hand below.
+          check-out times (hours = check-out − check-in).{" "}
+          {readOnly
+            ? "Scan a volunteer's QR to stamp those times. Corrections are an admin's job."
+            : "Scan their QR or set the times by hand below."}
           {event.expectedHours !== null && (
             <>
               {" "}
@@ -354,8 +365,14 @@ export function EventDetailPage({
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1.6fr]">
-        {/* Volunteer picker */}
+      <div
+        className={`grid grid-cols-1 gap-6 ${
+          readOnly ? "" : "lg:grid-cols-[1fr_1.6fr]"
+        }`}
+      >
+        {/* Volunteer picker — admins only: adding someone to an event is an
+            edit, and an officer's whole job is the scanner. */}
+        {!readOnly && (
         <section className="card overflow-hidden">
           <div className="border-b border-slate-100 px-5 py-4">
             <h2 className="text-base font-semibold text-slate-900">
@@ -431,6 +448,7 @@ export function EventDetailPage({
             </button>
           </div>
         </section>
+        )}
 
         {/* Attendance table */}
         <section className="card overflow-hidden">
@@ -440,8 +458,9 @@ export function EventDetailPage({
                 Attendance List
               </h2>
               <p className="text-xs text-slate-500">
-                Tap a check to stamp / clear that time, or edit the times directly.
-                Both times set ⇒ hours are credited (check-out − check-in).
+                {readOnly
+                  ? "Live view of who has been scanned in and out. Both times set ⇒ hours are credited (check-out − check-in)."
+                  : "Tap a check to stamp / clear that time, or edit the times directly. Both times set ⇒ hours are credited (check-out − check-in)."}
               </p>
             </div>
             <button
@@ -462,18 +481,26 @@ export function EventDetailPage({
                   <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Volunteer</th>
                   <th className="px-4 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Check-in</th>
                   <th className="px-4 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Check-out</th>
-                  <th className="px-2 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500" title="Tap to flag a conduct issue for this volunteer at this event">
+                  <th
+                    className="px-2 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500"
+                    title={
+                      readOnly
+                        ? "Conduct strikes recorded by an admin"
+                        : "Tap to flag a conduct issue for this volunteer at this event"
+                    }
+                  >
                     Strike
                   </th>
-                  <th className="w-16" />
+                  {!readOnly && <th className="w-16" />}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
                 {attendees.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-500">
-                      No one on the list yet. Add volunteers from the left, or scan
-                      their QR codes to check them in.
+                    <td colSpan={readOnly ? 4 : 5} className="px-4 py-10 text-center text-sm text-slate-500">
+                      {readOnly
+                        ? "No one on the list yet. Scan a volunteer's QR code to check them in."
+                        : "No one on the list yet. Add volunteers from the left, or scan their QR codes to check them in."}
                     </td>
                   </tr>
                 )}
@@ -482,6 +509,7 @@ export function EventDetailPage({
                   <AttendanceRow
                     key={a.volunteerName}
                     entry={a}
+                    readOnly={readOnly}
                     busy={busy || pendingRows.has(a.volunteerName)}
                     editing={editingRow === a.volunteerName}
                     onToggle={handleToggleCheck}
@@ -502,6 +530,7 @@ export function EventDetailPage({
         open={scannerOpen}
         event={event}
         volunteers={volunteers}
+        cameraOnly={readOnly}
         onClose={() => setScannerOpen(false)}
         onScanned={(updated) => onEventUpdated(updated)}
       />
@@ -511,6 +540,7 @@ export function EventDetailPage({
 
 function AttendanceRow({
   entry,
+  readOnly,
   busy,
   editing,
   onToggle,
@@ -521,6 +551,7 @@ function AttendanceRow({
   onSaveTimes,
 }: {
   entry: AttendanceEntry;
+  readOnly: boolean;
   busy: boolean;
   editing: boolean;
   onToggle: (
@@ -585,9 +616,14 @@ function AttendanceRow({
         <td className="px-4 py-2.5 text-center">
           <CheckToggle
             checked={entry.staffCheckin}
+            readOnly={readOnly}
             disabled={busy}
             onClick={() => onToggle(entry.volunteerName, "staffCheckin", !entry.staffCheckin)}
-            ariaLabel={`Toggle staff check-in for ${entry.volunteerName}`}
+            ariaLabel={
+              readOnly
+                ? `${entry.volunteerName} ${entry.staffCheckin ? "is checked in" : "is not checked in"}`
+                : `Toggle staff check-in for ${entry.volunteerName}`
+            }
           />
           {entry.checkinAt && (
             <div className="mt-1 text-[11px] text-slate-500">{formatClockFromIso(entry.checkinAt)}</div>
@@ -596,9 +632,14 @@ function AttendanceRow({
         <td className="px-4 py-2.5 text-center">
           <CheckToggle
             checked={entry.volunteerCheckout}
+            readOnly={readOnly}
             disabled={busy}
             onClick={() => onToggle(entry.volunteerName, "volunteerCheckout", !entry.volunteerCheckout)}
-            ariaLabel={`Toggle volunteer check-out for ${entry.volunteerName}`}
+            ariaLabel={
+              readOnly
+                ? `${entry.volunteerName} ${entry.volunteerCheckout ? "is checked out" : "is not checked out"}`
+                : `Toggle volunteer check-out for ${entry.volunteerName}`
+            }
           />
           {entry.checkoutAt && (
             <div className="mt-1 text-[11px] text-slate-500">{formatClockFromIso(entry.checkoutAt)}</div>
@@ -607,11 +648,13 @@ function AttendanceRow({
         <td className="px-2 py-2.5 text-center">
           <StrikeToggle
             strikes={entry.strikes || 0}
+            readOnly={readOnly}
             disabled={busy}
             volunteerName={entry.volunteerName}
             onClick={() => onToggleStrike(entry.volunteerName, entry.strikes || 0)}
           />
         </td>
+        {!readOnly && (
         <td className="px-2 py-2.5 text-right">
           <div className="inline-flex items-center gap-1.5">
             <button
@@ -639,8 +682,9 @@ function AttendanceRow({
             </button>
           </div>
         </td>
+        )}
       </tr>
-      {editing && (
+      {editing && !readOnly && (
         <tr className="bg-slate-50/70">
           <td colSpan={5} className="px-4 py-3">
             <div className="flex flex-wrap items-end gap-3">
@@ -691,27 +735,41 @@ function AttendanceRow({
 
 function CheckToggle({
   checked,
+  readOnly,
   disabled,
   onClick,
   ariaLabel,
 }: {
   checked: boolean;
+  readOnly: boolean;
   disabled: boolean;
   onClick: () => void;
   ariaLabel: string;
 }) {
+  // In officer mode this is a status light, not a control: rendering a real
+  // <span> (rather than a disabled button) is what tells a screen reader —
+  // and a thumb — that there is nothing to press.
+  const Tag = readOnly ? "span" : "button";
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
+    <Tag
+      {...(readOnly
+        ? { role: "img" }
+        : { type: "button" as const, onClick, disabled })}
       aria-label={ariaLabel}
       className={`inline-flex h-9 w-9 items-center justify-center rounded-full border transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${
         checked
-          ? "border-transparent bg-emerald-500 text-white shadow focus:ring-emerald-500 hover:bg-emerald-600"
-          : "border-slate-300 bg-white text-slate-400 hover:border-slate-400 hover:text-slate-600 focus:ring-slate-400"
+          ? `border-transparent bg-emerald-500 text-white shadow focus:ring-emerald-500 ${readOnly ? "" : "hover:bg-emerald-600"}`
+          : `border-slate-300 bg-white text-slate-400 ${readOnly ? "" : "hover:border-slate-400 hover:text-slate-600"} focus:ring-slate-400`
       } disabled:cursor-not-allowed disabled:opacity-60`}
-      title={checked ? "Checked — tap to clear" : "Not yet — tap to stamp now"}
+      title={
+        readOnly
+          ? checked
+            ? "Checked"
+            : "Not yet"
+          : checked
+            ? "Checked — tap to clear"
+            : "Not yet — tap to stamp now"
+      }
     >
       {checked ? (
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
@@ -723,7 +781,7 @@ function CheckToggle({
           <circle cx="12" cy="12" r="7" strokeDasharray="2 2" />
         </svg>
       )}
-    </button>
+    </Tag>
   );
 }
 
@@ -731,36 +789,48 @@ function CheckToggle({
 // or a previous admin recorded more than one strike for the same event.
 function StrikeToggle({
   strikes,
+  readOnly,
   disabled,
   volunteerName,
   onClick,
 }: {
   strikes: number;
+  readOnly: boolean;
   disabled: boolean;
   volunteerName: string;
   onClick: () => void;
 }) {
   const struck = strikes > 0;
+  // Recording a strike is a judgement call reserved for admins, so officers see
+  // the state and cannot change it.
+  const Tag = readOnly ? "span" : "button";
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-pressed={struck}
+    <Tag
+      {...(readOnly
+        ? { role: "img" }
+        : { type: "button" as const, onClick, disabled, "aria-pressed": struck })}
       aria-label={
-        struck
-          ? `Clear the strike for ${volunteerName}`
-          : `Add a strike for ${volunteerName}`
+        readOnly
+          ? struck
+            ? `${volunteerName} has ${strikes} strike${strikes === 1 ? "" : "s"} for this event`
+            : `${volunteerName} has no strikes for this event`
+          : struck
+            ? `Clear the strike for ${volunteerName}`
+            : `Add a strike for ${volunteerName}`
       }
       title={
-        struck
-          ? `${strikes} strike${strikes === 1 ? "" : "s"} — tap to clear`
-          : "No strike — tap to add one"
+        readOnly
+          ? struck
+            ? `${strikes} strike${strikes === 1 ? "" : "s"}`
+            : "No strike"
+          : struck
+            ? `${strikes} strike${strikes === 1 ? "" : "s"} — tap to clear`
+            : "No strike — tap to add one"
       }
       className={`inline-flex h-9 w-9 items-center justify-center rounded-full border text-sm font-bold transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${
         struck
-          ? "border-transparent bg-red-500 text-white shadow hover:bg-red-600 focus:ring-red-500"
-          : "border-slate-300 bg-white text-slate-300 hover:border-red-300 hover:text-red-400 focus:ring-slate-400"
+          ? `border-transparent bg-red-500 text-white shadow focus:ring-red-500 ${readOnly ? "" : "hover:bg-red-600"}`
+          : `border-slate-300 bg-white text-slate-300 ${readOnly ? "" : "hover:border-red-300 hover:text-red-400"} focus:ring-slate-400`
       } disabled:cursor-not-allowed disabled:opacity-60`}
     >
       {strikes > 1 ? (
@@ -771,7 +841,7 @@ function StrikeToggle({
           <path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
         </svg>
       )}
-    </button>
+    </Tag>
   );
 }
 

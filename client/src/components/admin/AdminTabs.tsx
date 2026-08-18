@@ -1,17 +1,36 @@
+import type { AccountRole } from "../../types";
+
 export type AdminTab = "roster" | "volunteers" | "events";
 
 interface Props {
   active: AdminTab;
   onChange: (tab: AdminTab) => void;
+  // Officers get a reduced switcher: they have no volunteer editor, so showing
+  // a tab they are not allowed to open would be a dead end.
+  role: AccountRole;
   volunteerCount?: number;
   eventCount?: number;
 }
 
-// Sticky admin section switcher so the admin never has to scroll to reach the
-// roster, the volunteer editor, or the events. Sized to be thumb-friendly on a
-// phone/iPad (3 tabs fill the width) and tidy on desktop.
-export function AdminTabs({ active, onChange, volunteerCount, eventCount }: Props) {
-  const tabs: Array<{ key: AdminTab; label: string; count?: number; icon: JSX.Element }> = [
+// The tabs each account may open. Kept as data (rather than a conditional in
+// the markup) so "what can an officer see?" is answerable in one line.
+const TABS_BY_ROLE: Record<AccountRole, AdminTab[]> = {
+  admin: ["roster", "volunteers", "events"],
+  officer: ["roster", "events"],
+};
+
+// Which tabs an account may open. Exported so the app can validate a tab it
+// restored from a previous session against the CURRENT account — an officer
+// resuming an admin's session must never land on a tab they cannot use.
+export function ALLOWED_TABS(role: AccountRole): AdminTab[] {
+  return TABS_BY_ROLE[role] ?? TABS_BY_ROLE.admin;
+}
+
+// Sticky section switcher so nobody has to scroll to reach the roster, the
+// volunteer editor, or the events. Sized to be thumb-friendly on a phone/iPad
+// (the tabs fill the width) and tidy on desktop.
+export function AdminTabs({ active, onChange, role, volunteerCount, eventCount }: Props) {
+  const allTabs: Array<{ key: AdminTab; label: string; count?: number; icon: JSX.Element }> = [
     {
       key: "roster",
       label: "Roster",
@@ -48,9 +67,12 @@ export function AdminTabs({ active, onChange, volunteerCount, eventCount }: Prop
     },
   ];
 
+  const allowed = ALLOWED_TABS(role);
+  const tabs = allTabs.filter((t) => allowed.includes(t.key));
+
   return (
     <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 px-4 backdrop-blur sm:px-6">
-      <div className="mx-auto flex max-w-6xl gap-1 py-2" role="tablist" aria-label="Admin sections">
+      <div className="mx-auto flex max-w-6xl gap-1 py-2" role="tablist" aria-label="Sections">
         {tabs.map((t) => {
           const on = active === t.key;
           return (

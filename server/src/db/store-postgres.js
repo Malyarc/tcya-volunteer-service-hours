@@ -701,6 +701,37 @@ export function createPostgresStore(connectionString) {
     return rows.map(mapSubmission);
   }
 
+  // ---------- event order (the Events page section order) ----------
+
+  // Read back sorted by position, then by name so a hand-edited table with
+  // duplicate positions still yields one deterministic order. The returned
+  // positions are re-indexed 0..n-1 to match the memory store exactly.
+  async function listEventOrder() {
+    await ensureReady();
+    const rows = await sql`SELECT name, position FROM event_order ORDER BY position ASC, name ASC`;
+    return rows.map((r, i) => ({ name: r.name, position: i }));
+  }
+
+  async function setEventOrder(names) {
+    await ensureReady();
+    const seen = new Set();
+    const clean = [];
+    for (const raw of Array.isArray(names) ? names : []) {
+      const name = typeof raw === "string" ? raw.trim() : "";
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      clean.push(name);
+    }
+    // One transaction: the page must never observe a half-applied order.
+    // Replacing wholesale also prunes names that no longer exist.
+    const stmts = [sql`DELETE FROM event_order`];
+    clean.forEach((name, i) => {
+      stmts.push(sql`INSERT INTO event_order (name, position) VALUES (${name}, ${i})`);
+    });
+    await sql.transaction(stmts);
+    return clean.map((name, position) => ({ name, position }));
+  }
+
   // ---------- admin ----------
 
   async function reset() {
@@ -709,6 +740,8 @@ export function createPostgresStore(connectionString) {
       sql`DELETE FROM submissions`,
       sql`DELETE FROM attendance`,
       sql`DELETE FROM events`,
+      // No events ⇒ no groups to order (mirrors the memory store).
+      sql`DELETE FROM event_order`,
     ]);
   }
 
@@ -720,12 +753,18 @@ export function createPostgresStore(connectionString) {
 
   async function exportAll() {
     await ensureReady();
-    const [volunteers, events, submissions] = await Promise.all([
+    const [volunteers, events, submissions, eventOrder] = await Promise.all([
       listVolunteers(),
       listEvents(),
       listSubmissions(),
+      listEventOrder(),
     ]);
-    return { volunteers, events, submissions };
+    return {
+      volunteers,
+      events,
+      submissions,
+      eventOrder: eventOrder.map((r) => r.name),
+    };
   }
 
   async function importAll(payload) {
@@ -854,6 +893,22 @@ export function createPostgresStore(connectionString) {
         )`);
     }
 
+    // Only replace the Events page order when the payload carries one (the same
+    // by-category rule as everything above), and inside the SAME transaction so
+    // a failed import can't leave a new order behind.
+    if (Array.isArray(payload?.eventOrder)) {
+      const seen = new Set();
+      stmts.push(sql`DELETE FROM event_order`);
+      let i = 0;
+      for (const raw of payload.eventOrder) {
+        const name = typeof raw === "string" ? raw.trim() : "";
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        stmts.push(sql`INSERT INTO event_order (name, position) VALUES (${name}, ${i})`);
+        i += 1;
+      }
+    }
+
     await sql.transaction(stmts);
     return exportAll();
   }
@@ -879,6 +934,8 @@ export function createPostgresStore(connectionString) {
     patchAttendance,
     removeAttendance,
     listSubmissions,
+    listEventOrder,
+    setEventOrder,
     reset,
     ping,
     exportAll,

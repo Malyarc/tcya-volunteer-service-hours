@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import express from "express";
 import { neon, neonConfig } from "@neondatabase/serverless";
 import { createRouter, deriveSessionSecret } from "../src/routes.js";
+import { ADMIN_PASSWORD, ADMIN_USERNAME, OFFICER_PASSWORD, OFFICER_USERNAME } from "../src/accounts.js";
 import { createPostgresStore } from "../src/db/store-postgres.js";
 import { SCHEMA_STATEMENTS } from "../src/db/schema.js";
 import { SEED_VOLUNTEERS } from "../src/data/seed-volunteers.js";
@@ -97,7 +98,7 @@ if (!URL) {
   // typo in the migration statements.
   async function resetDb() {
     await sql.transaction([
-      sql`TRUNCATE attendance, submissions, events, volunteers, app_migrations, archived_records RESTART IDENTITY CASCADE`,
+      sql`TRUNCATE attendance, submissions, events, event_order, volunteers, app_migrations, archived_records RESTART IDENTITY CASCADE`,
       sql`ALTER SEQUENCE volunteer_code_seq RESTART`,
     ]);
   }
@@ -117,9 +118,7 @@ if (!URL) {
       createRouter({
         store,
         backend: "postgres",
-        adminUsername: "admin",
-        adminPassword: "1013",
-        sessionSecret: deriveSessionSecret("admin", "1013"),
+        sessionSecret: deriveSessionSecret(ADMIN_USERNAME, ADMIN_PASSWORD),
       })
     );
     const server = app.listen(0);

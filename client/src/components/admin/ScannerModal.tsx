@@ -29,11 +29,23 @@ interface Props {
   open: boolean;
   event: VolunteerEvent;
   volunteers: Volunteer[];
+  // Officer mode: the camera is the ONLY way in. The typed-ID and pick-a-name
+  // fallbacks are admin tools — they check someone in without their card being
+  // present, which is exactly the override the chapter reserves for admins
+  // (and the volunteer list they need is admin-only data anyway).
+  cameraOnly?: boolean;
   onClose: () => void;
   onScanned: (updatedEvent: VolunteerEvent) => void;
 }
 
-export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Props) {
+export function ScannerModal({
+  open,
+  event,
+  volunteers,
+  cameraOnly = false,
+  onClose,
+  onScanned,
+}: Props) {
   const [mode, setMode] = useState<Mode>("in");
   const [cameraState, setCameraState] = useState<"idle" | "starting" | "on" | "error">("idle");
   const [cameraError, setCameraError] = useState<string>("");
@@ -232,14 +244,19 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
   const startCamera = useCallback(async () => {
     const myRun = runIdRef.current;
     setCameraError("");
+    // What to tell someone whose camera won't start. In officer mode there IS
+    // no manual fallback on screen, so pointing at one would be a dead end.
+    const fallback = cameraOnly
+      ? "Ask an admin to check this volunteer in."
+      : "Use manual check-in below.";
     if (!window.isSecureContext) {
       setCameraState("error");
-      setCameraError("Camera needs a secure (https) connection. You can still check people in manually below.");
+      setCameraError(`Camera needs a secure (https) connection. ${fallback}`);
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraState("error");
-      setCameraError("This browser can't open the camera. Use manual check-in below.");
+      setCameraError(`This browser can't open the camera. ${fallback}`);
       return;
     }
     setCameraState("starting");
@@ -281,14 +298,14 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
       setCameraState("error");
       const name = (err as { name?: string })?.name;
       if (name === "NotAllowedError" || name === "SecurityError") {
-        setCameraError("Camera permission was blocked. Allow camera access, or use manual check-in below.");
+        setCameraError(`Camera permission was blocked. Allow camera access. ${fallback}`);
       } else if (name === "NotFoundError" || name === "OverconstrainedError") {
-        setCameraError("No camera found. Use manual check-in below.");
+        setCameraError(`No camera found. ${fallback}`);
       } else {
-        setCameraError("Couldn't start the camera. Use manual check-in below.");
+        setCameraError(`Couldn't start the camera. ${fallback}`);
       }
     }
-  }, [tick]);
+  }, [tick, cameraOnly]);
 
   // Open / close lifecycle. Bump the generation on every transition so an
   // in-flight getUserMedia can tell it's stale (see startCamera).
@@ -428,10 +445,13 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
               ? feedback.text
               : cameraState === "on"
                 ? `Point at a volunteer's QR to check ${mode === "in" ? "in" : "out"}.`
-                : "Camera off — use manual check-in below."}
+                : cameraOnly
+                  ? "Camera off — allow camera access to scan."
+                  : "Camera off — use manual check-in below."}
           </div>
 
-          {/* Manual fallback */}
+          {/* Manual fallback (admins only — see `cameraOnly`) */}
+          {!cameraOnly && (
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
               Manual check-{mode === "in" ? "in" : "out"}
@@ -465,6 +485,7 @@ export function ScannerModal({ open, event, volunteers, onClose, onScanned }: Pr
               </button>
             </div>
           </div>
+          )}
 
           {/* Recent scans */}
           {recent.length > 0 && (

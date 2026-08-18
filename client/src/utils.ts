@@ -353,7 +353,10 @@ export function eventHours(
 export function groupEventsByName(
   events: VolunteerEvent[],
   submissions: Submission[],
-  today: string = todayYmd()
+  today: string = todayYmd(),
+  // The admin's saved section order (names, most-important first). Empty = use
+  // the automatic order for everything.
+  order: readonly string[] = []
 ): EventGroup[] {
   const byName = new Map<string, VolunteerEvent[]>();
   for (const e of events) {
@@ -392,13 +395,66 @@ export function groupEventsByName(
     });
   }
 
-  groups.sort((a, b) => {
-    if (a.nextDate && b.nextDate) return a.nextDate.localeCompare(b.nextDate);
-    if (a.nextDate) return -1;
-    if (b.nextDate) return 1;
-    return (b.lastDate || "").localeCompare(a.lastDate || "");
+  return sortEventGroups(groups, order);
+}
+
+// The automatic order, used for any section the admin has NOT placed by hand:
+// anything with an upcoming date floats to the top (soonest first) because
+// those are the actionable ones; the rest follow by how recently they last ran.
+export function compareEventGroupsAutomatically(
+  a: EventGroup,
+  b: EventGroup
+): number {
+  if (a.nextDate && b.nextDate) return a.nextDate.localeCompare(b.nextDate);
+  if (a.nextDate) return -1;
+  if (b.nextDate) return 1;
+  return (b.lastDate || "").localeCompare(a.lastDate || "");
+}
+
+// Apply the admin's saved section order.
+//
+// Sections the admin placed come first, in exactly that order. Anything not in
+// the saved order — a brand-new event type created after the last drag — keeps
+// the automatic order and follows below, so a new event can never be hidden by
+// a stale ordering. Returns a NEW array; the input is not mutated.
+export function sortEventGroups(
+  groups: EventGroup[],
+  order: readonly string[] = []
+): EventGroup[] {
+  const rank = new Map<string, number>();
+  order.forEach((name, i) => {
+    if (!rank.has(name)) rank.set(name, i);
   });
-  return groups;
+  return [...groups].sort((a, b) => {
+    const ra = rank.get(a.name);
+    const rb = rank.get(b.name);
+    if (ra !== undefined && rb !== undefined) return ra - rb;
+    if (ra !== undefined) return -1;
+    if (rb !== undefined) return 1;
+    return compareEventGroupsAutomatically(a, b);
+  });
+}
+
+// Does this Events page section need a dropdown at all?
+//
+// A section holding a single date has nothing to collapse — the chevron would
+// hide one row and reveal one row — so it renders as a plain heading instead.
+// Lives here, next to the grouping, so the page and its tests share one rule.
+export function isCollapsibleGroup(group: EventGroup): boolean {
+  return group.totalOccurrences > 1;
+}
+
+// Move one item to a new index, returning a new array. The shared primitive
+// behind both the drag-and-drop and the up/down buttons on the Events page, so
+// the two can never disagree. Out-of-range indices are clamped/ignored.
+export function moveItem<T>(list: readonly T[], from: number, to: number): T[] {
+  const next = [...list];
+  if (from < 0 || from >= next.length) return next;
+  const target = Math.max(0, Math.min(next.length - 1, to));
+  if (target === from) return next;
+  const [item] = next.splice(from, 1);
+  next.splice(target, 0, item);
+  return next;
 }
 
 // Sort attendance: admin-added rows first (alphabetical), self-added rows last

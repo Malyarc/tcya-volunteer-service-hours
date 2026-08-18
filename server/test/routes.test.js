@@ -8,6 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import { createRouter, deriveSessionSecret } from "../src/routes.js";
+import { ADMIN_PASSWORD, ADMIN_USERNAME, OFFICER_PASSWORD, OFFICER_USERNAME } from "../src/accounts.js";
 import { createMemoryStore } from "../src/db/store-memory.js";
 import { runSuite } from "./suite.js";
 
@@ -38,9 +39,7 @@ async function withServer(run) {
     createRouter({
       store,
       backend: "memory",
-      adminUsername: "admin",
-      adminPassword: "1013",
-      sessionSecret: deriveSessionSecret("admin", "1013"),
+      sessionSecret: deriveSessionSecret(ADMIN_USERNAME, ADMIN_PASSWORD),
     })
   );
   const server = app.listen(0);
@@ -55,10 +54,10 @@ async function withServer(run) {
 
 runSuite(withServer, "memory");
 
-// Fail-closed admin: when adminEnabled=false (production with no explicit
-// ADMIN_PASSWORD), /login and admin routes return 503, but public endpoints
-// keep working.
-test("adminEnabled=false disables login + admin routes but not public reads", async () => {
+// The kill switch: with adminEnabled=false NOBODY can sign in — neither
+// account — and every privileged route answers 503, while the public endpoints
+// keep serving.
+test("adminEnabled=false disables login + privileged routes but not public reads", async () => {
   const store = createMemoryStore();
   const app = express();
   app.use(express.json({ limit: "5mb" }));
@@ -66,9 +65,7 @@ test("adminEnabled=false disables login + admin routes but not public reads", as
     "/api",
     createRouter({
       store,
-      adminUsername: "admin",
-      adminPassword: "1013",
-      sessionSecret: deriveSessionSecret("admin", "1013"),
+      sessionSecret: deriveSessionSecret(ADMIN_USERNAME, ADMIN_PASSWORD),
       adminEnabled: false,
     })
   );
@@ -78,15 +75,26 @@ test("adminEnabled=false disables login + admin routes but not public reads", as
   const api = makeApi(base);
   try {
     assert.equal(
-      (await api.send("POST", "/api/login", { username: "admin", password: "1013" })).status,
+      (await api.send("POST", "/api/login", { username: ADMIN_USERNAME, password: ADMIN_PASSWORD })).status,
+      503
+    );
+    assert.equal(
+      (await api.send("POST", "/api/login", { username: OFFICER_USERNAME, password: OFFICER_PASSWORD })).status,
       503
     );
     assert.equal((await api.get("/api/volunteers")).status, 503);
     assert.equal((await api.send("POST", "/api/admin/reset", undefined)).status, 503);
+    assert.equal(
+      (await api.send("POST", "/api/events/00000000-0000-4000-8000-000000000000/checkin", { code: "TCYA-0001" })).status,
+      503
+    );
+    assert.equal((await api.send("PUT", "/api/event-order", { names: ["x"] })).status, 503);
     // Public endpoints still serve.
     assert.equal((await api.get("/api/roster")).status, 200);
     assert.equal((await api.get("/api/events")).status, 200);
+    assert.equal((await api.get("/api/event-order")).status, 200);
     assert.equal((await api.get("/api/session")).body.admin, false);
+    assert.equal((await api.get("/api/session")).body.role, null);
   } finally {
     await new Promise((res) => server.close(res));
   }

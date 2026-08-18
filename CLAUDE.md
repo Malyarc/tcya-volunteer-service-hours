@@ -25,9 +25,11 @@ Postgres** database.
 - **Hours derivation lives in ONE place**, `server/src/hours.js`
   (`deriveSubmissionFields`), used by both stores and by all three reconcile
   paths (one row / one event / one volunteer) so they cannot drift.
-  `server/src/roles.js` defines the two roles; `server/src/db/data-migrations.js`
-  holds the one-time, marker-guarded DATA migrations (officer promotion, purge
-  of former members' leftover records).
+  `server/src/roles.js` defines the two VOLUNTEER roles (the hours cap);
+  `server/src/accounts.js` defines the two LOGIN accounts (admin / officer) and
+  holds their passcodes; `server/src/db/data-migrations.js` holds the one-time,
+  marker-guarded DATA migrations (officer promotion, purge of former members'
+  leftover records).
 - Frontend: `client/` (Vite + React + Tailwind). QR generation in `client/src/qr.ts`
   (payload + `formatDisplayId`). The ID **card** is drawn by one canvas renderer,
   `client/src/cardRenderer.ts`, which feeds the modal preview, PNG/copy, and the
@@ -39,6 +41,13 @@ Postgres** database.
 - **Brand logo:** the lotus + cupped-hands + candle emblem is `/cert-logo.png`
   (header, passcode gate, ID card, certificate). `/tzu-chi-logo.png` is the older
   ship emblem — now unused; do not reintroduce it into the chrome.
+- **Events page order:** the page renders one section per event display NAME.
+  Admins drag (or arrow) those sections into an order stored in the `event_order`
+  table and served by `GET /event-order` (public read) / `PUT /event-order`
+  (admin). `sortEventGroups` in `client/src/utils.ts` puts placed sections first
+  in the saved order and leaves everything else in the automatic order BELOW, so
+  a new event type is never hidden by a stale order. A section with a single date
+  renders flat — `isCollapsibleGroup` is the one rule the page and its tests share.
 - **Display ID vs canonical code:** the human-facing ID is the branded
   `ELA-TCYA-001` form (`formatDisplayId(code)`), shown on the card, QR modal, admin
   roster, and Excel export. The stored `code` and the QR payload keep the canonical
@@ -91,9 +100,26 @@ Postgres** database.
    (`qr.ts`) encodes only `{t,v,id,code,name}` — never email/phone/custom fields.
 6. **Volunteer codes come from a Postgres sequence** (`volunteer_code_seq`); seeding
    runs once, guarded by a transaction-scoped advisory lock.
-7. **Admin fails closed in production:** if `DATABASE_URL` is set (or
-   `NODE_ENV=production`) and `ADMIN_PASSWORD` is unset, admin routes + `/login`
-   return 503. Set `ADMIN_PASSWORD` (and ideally `SESSION_SECRET`) in prod.
+7. **There are TWO accounts, and the officer one is scanner-only.**
+   `server/src/accounts.js` holds both passcodes (admin `0314`, officer `1013`) —
+   deploy configuration no longer supplies them, and a stale `ADMIN_PASSWORD` in
+   an environment is deliberately ignored, so every deployment signs in the same
+   way. `/login` returns `{token, role}`; the two tokens are HMACs with distinct
+   derivation prefixes and can never collide.
+   - `requireAdmin` guards everything; `requireScanner` (admin OR officer) guards
+     ONLY `POST /events/:id/checkin|checkout`. An officer hitting an admin route
+     gets **403**, never 401 — the client clears its token on a 401, and signing
+     an officer out mid-event over a blocked action would be worse than the
+     action it blocked.
+   - Officers never receive QR codes, volunteer ids or contact details:
+     `officerEvent` / `officerAttendance` / `officerVolunteer` project every
+     response they can reach. They see check-in/out TIMES (they run the door).
+   - The UI mirrors this (read-only event page, camera-only scanner, no
+     Volunteers tab) but is not the enforcement — the server is. Any new
+     mutating route must be added under `requireAdmin`, and the shared suite's
+     "an officer CANNOT …" tests are where that gets proved.
+   - `adminEnabled: false` remains as a kill switch: nobody can sign in and every
+     privileged route returns 503, while public reads keep working.
 
 ## Tests & the green bar
 
@@ -116,7 +142,8 @@ npm run build --prefix client   # tsc -b && vite build
   start: DDL + seed + data migrations. Also holds the Postgres-only migration
   tests (marker guards, archive-before-purge).
 - Client: `client/src/{utils,qr,volunteerExports}.test.ts` — incl. the
-  roster==volunteers guard, strike aggregation and event grouping.
+  roster==volunteers guard, strike aggregation, event grouping, the saved
+  section order (`sortEventGroups` / `moveItem`) and `isCollapsibleGroup`.
 
 **MANDATORY pre-deploy gate:** the default `npm test` is memory-only. Because the
 production data layer is Postgres, run the parity suite before every deploy.
@@ -170,13 +197,14 @@ never touches prod (the table is non-empty). Safeguards now in place:
 ## Deploy
 
 - **Netlify** (primary): push to `main` → auto-build. Requires `DATABASE_URL` (or
-  `NETLIFY_DATABASE_URL`), `ADMIN_PASSWORD` (and ideally `SESSION_SECRET`) in Site
-  config → Environment variables, scoped to **all** deploy contexts (Production +
-  Deploy Previews + Branch deploys) so preview URLs don't run in-memory. The
-  function creates the schema + seeds the roster on first request.
+  `NETLIFY_DATABASE_URL`) in Site config → Environment variables, scoped to
+  **all** deploy contexts (Production + Deploy Previews + Branch deploys) so
+  preview URLs don't run in-memory. Sign-in needs no environment variable (see
+  invariant 7) — a leftover `ADMIN_PASSWORD` there is ignored. The function
+  creates the schema + seeds the roster on first request.
 - **Post-deploy smoke check:** `curl https://<site>/api/health` → expect
   `{"backend":"postgres","persistent":true,"dbOk":true}`.
-- **EC2**: `npm run build` then `npm start` with the same env vars. `cd server &&
+- **EC2**: `npm run build` then `npm start` with the same env var. `cd server &&
   npm run migrate` pre-creates the schema; `CONFIRM_RESET=1 npm run reset` clears
   events/attendance/submissions but keeps the roster (backup written first).
 - **Data migration** from an old file/Blobs backup: `POST /api/admin/import`

@@ -7,10 +7,12 @@ import {
   formatTime12h,
   getEventDisplayName,
   groupEventsByName,
+  isCollapsibleGroup,
+  moveItem,
   todayYmd,
   type EventGroup,
 } from "../../utils";
-import { updateEvent } from "../../api";
+import { saveEventOrder, updateEvent } from "../../api";
 import {
   expectedHoursToInput,
   parseExpectedHoursInput,
@@ -20,9 +22,16 @@ import {
 interface Props {
   events: VolunteerEvent[];
   submissions: Submission[];
+  // The saved section order (names, in display order). Empty = automatic.
+  eventOrder: string[];
   onCreate: () => void;
   onOpenEvent: (eventId: string) => void;
   onEventUpdated: (next: VolunteerEvent) => void;
+  onEventOrderChanged: (names: string[]) => void;
+  // Officers open events to scan; they never edit one. In read-only mode every
+  // control that would mutate an event is absent, not just disabled — the
+  // server enforces the same rule, this keeps the page honest about it.
+  readOnly?: boolean;
 }
 
 // The column grid, declared once so the header and every row stay aligned.
@@ -37,22 +46,29 @@ const GRID =
 export function EventsPanel({
   events,
   submissions,
+  eventOrder,
   onCreate,
   onOpenEvent,
   onEventUpdated,
+  onEventOrderChanged,
+  readOnly = false,
 }: Props) {
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Index of the section being dragged, and the one it is hovering over.
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const [savingOrder, setSavingOrder] = useState(false);
   const today = todayYmd();
 
-  // One section per event NAME, each listing that event's dates. A brand-new
-  // event type (including a custom "Others" name) automatically gets its own
-  // section the moment it is created.
+  // One section per event NAME, each listing that event's dates, in the order
+  // an admin dragged them into (anything unplaced keeps the automatic order and
+  // follows below — so a brand-new event type still shows up immediately).
   const groups = useMemo(
-    () => groupEventsByName(events, submissions, today),
-    [events, submissions, today]
+    () => groupEventsByName(events, submissions, today, eventOrder),
+    [events, submissions, today, eventOrder]
   );
 
   const visibleGroups = useMemo(() => {
@@ -79,7 +95,18 @@ export function EventsPanel({
     [groups]
   );
 
-  const allCollapsed = visibleGroups.length > 0 && visibleGroups.every((g) => collapsed.has(g.name));
+  // Reordering acts on the FULL list by index, so it is only offered when the
+  // full list is what's on screen: a search shows a subset, and saving that
+  // subset would silently drop every filtered-out section from the order.
+  const searching = query.trim().length > 0;
+  const canReorder = !readOnly && !searching && groups.length > 1;
+
+  // Only sections with more than one date collapse — a section holding a single
+  // event has nothing to hide behind a dropdown (see isCollapsibleGroup).
+  const collapsibleGroups = visibleGroups.filter(isCollapsibleGroup);
+  const allCollapsed =
+    collapsibleGroups.length > 0 &&
+    collapsibleGroups.every((g) => collapsed.has(g.name));
 
   function toggleGroup(name: string) {
     setCollapsed((prev) => {
@@ -91,8 +118,54 @@ export function EventsPanel({
   }
 
   function toggleAll() {
-    setCollapsed(allCollapsed ? new Set() : new Set(groups.map((g) => g.name)));
+    setCollapsed(
+      allCollapsed
+        ? new Set()
+        : new Set(groups.filter(isCollapsibleGroup).map((g) => g.name))
+    );
   }
+
+  // Persist a new section order for EVERYONE. Optimistic: the page reorders
+  // immediately and rolls back if the save fails, so a dropped request can
+  // never leave the screen disagreeing with the database.
+  async function commitOrder(names: string[]) {
+    const previous = eventOrder;
+    onEventOrderChanged(names);
+    setError(null);
+    try {
+      setSavingOrder(true);
+      const saved = await saveEventOrder(names);
+      onEventOrderChanged(saved.map((r) => r.name));
+    } catch (err) {
+      onEventOrderChanged(previous);
+      setError(
+        err instanceof Error
+          ? `Could not save the new order — ${err.message}`
+          : "Could not save the new order."
+      );
+    } finally {
+      setSavingOrder(false);
+    }
+  }
+
+  function moveGroup(from: number, to: number) {
+    if (!canReorder) return;
+    if (to < 0 || to >= groups.length || to === from) return;
+    commitOrder(moveItem(groups, from, to).map((g) => g.name));
+  }
+
+  function handleDrop(target: number) {
+    const from = dragIndex;
+    setDragIndex(null);
+    setDropIndex(null);
+    if (from === null) return;
+    moveGroup(from, target);
+  }
+
+  // The order is custom when the saved list actually places a section that is
+  // on screen — that's what "Reset to automatic order" would undo.
+  const hasCustomOrder =
+    eventOrder.length > 0 && groups.some((g) => eventOrder.includes(g.name));
 
   return (
     <section className="space-y-4">
@@ -102,19 +175,30 @@ export function EventsPanel({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold text-slate-900">Events</h2>
-              <span className="badge bg-accent-100 text-accent-700">Admin</span>
+              <span
+                className={`badge ${
+                  readOnly
+                    ? "bg-emerald-100 text-emerald-800"
+                    : "bg-accent-100 text-accent-700"
+                }`}
+              >
+                {readOnly ? "Officer" : "Admin"}
+              </span>
             </div>
             <p className="text-sm text-slate-500">
-              Each event type has its own table listing every date it ran. Edit a
-              date, its times or its expected hours right here.
+              {readOnly
+                ? "Open an event to scan volunteers in and out. Only an admin can change an event."
+                : "Each event type has its own section listing every date it ran. Edit a date, its times or its expected hours right here."}
             </p>
           </div>
-          <button onClick={onCreate} className="btn-primary">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-            Create Event
-          </button>
+          {!readOnly && (
+            <button onClick={onCreate} className="btn-primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              Create Event
+            </button>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3 px-5 py-4 sm:grid-cols-4">
@@ -139,7 +223,7 @@ export function EventsPanel({
               className="input pl-9"
             />
           </div>
-          {groups.length > 1 && (
+          {collapsibleGroups.length > 1 && (
             <button
               onClick={toggleAll}
               className="text-xs font-semibold text-brand-700 hover:text-brand-900"
@@ -147,7 +231,25 @@ export function EventsPanel({
               {allCollapsed ? "Expand all" : "Collapse all"}
             </button>
           )}
+          {canReorder && hasCustomOrder && (
+            <button
+              onClick={() => commitOrder([])}
+              disabled={savingOrder}
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800 disabled:opacity-50"
+              title="Go back to sorting by soonest upcoming date"
+            >
+              Reset order
+            </button>
+          )}
         </div>
+
+        {canReorder && (
+          <p className="border-t border-slate-100 bg-slate-50/60 px-5 py-2 text-xs text-slate-500">
+            <span className="font-semibold text-slate-600">Tip:</span> drag a
+            section by its handle — or use the arrows — to set the order of the
+            list. The order is saved for everyone.
+          </p>
+        )}
       </div>
 
       {error && (
@@ -156,26 +258,68 @@ export function EventsPanel({
         </div>
       )}
 
-      {/* ---- One table per event type ---- */}
+      {/* ---- One section per event type ---- */}
       {visibleGroups.length === 0 ? (
         <div className="card px-5 py-12 text-center text-sm text-slate-500">
           {events.length === 0 ? (
-            <>
-              No events yet — click <strong>Create Event</strong> to add one.
-            </>
+            readOnly ? (
+              "No events yet — an admin needs to create one before you can scan."
+            ) : (
+              <>
+                No events yet — click <strong>Create Event</strong> to add one.
+              </>
+            )
           ) : (
             "No events match your search."
           )}
         </div>
       ) : (
-        visibleGroups.map((group) => {
-          const isCollapsed = collapsed.has(group.name);
+        visibleGroups.map((group, index) => {
+          const collapsible = isCollapsibleGroup(group);
+          const isCollapsed = collapsible && collapsed.has(group.name);
+          const isDropTarget =
+            canReorder && dragIndex !== null && dropIndex === index && dragIndex !== index;
           return (
-            <section key={group.name} className="card overflow-hidden">
+            <section
+              key={group.name}
+              onDragOver={(e) => {
+                if (!canReorder || dragIndex === null) return;
+                e.preventDefault();
+                setDropIndex(index);
+              }}
+              onDrop={(e) => {
+                if (!canReorder) return;
+                e.preventDefault();
+                handleDrop(index);
+              }}
+              className={`card overflow-hidden transition ${
+                isDropTarget ? "ring-2 ring-brand-400" : ""
+              } ${canReorder && dragIndex === index ? "opacity-60" : ""}`}
+            >
               <GroupHeader
                 group={group}
+                collapsible={collapsible}
                 collapsed={isCollapsed}
                 onToggle={() => toggleGroup(group.name)}
+                reorder={
+                  canReorder
+                    ? {
+                        index,
+                        total: groups.length,
+                        busy: savingOrder,
+                        onMoveUp: () => moveGroup(index, index - 1),
+                        onMoveDown: () => moveGroup(index, index + 1),
+                        onDragStart: () => {
+                          setDragIndex(index);
+                          setDropIndex(index);
+                        },
+                        onDragEnd: () => {
+                          setDragIndex(null);
+                          setDropIndex(null);
+                        },
+                      }
+                    : null
+                }
               />
 
               {!isCollapsed && (
@@ -190,7 +334,7 @@ export function EventsPanel({
                     <div>End</div>
                     <div>Expected Hrs</div>
                     <div>Checked In</div>
-                    <div className="text-right">Actions</div>
+                    <div className="text-right">{readOnly ? "" : "Actions"}</div>
                   </div>
 
                   <ul className="divide-y divide-slate-100">
@@ -200,6 +344,7 @@ export function EventsPanel({
                           event={ev}
                           today={today}
                           hours={eventHours(ev, submissions, events)}
+                          readOnly={readOnly}
                           editing={editingId === ev.id}
                           onEdit={() => {
                             setError(null);
@@ -230,62 +375,141 @@ export function EventsPanel({
   );
 }
 
+interface ReorderControls {
+  index: number;
+  total: number;
+  busy: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+}
+
 function GroupHeader({
   group,
+  collapsible,
   collapsed,
   onToggle,
+  reorder,
 }: {
   group: EventGroup;
+  collapsible: boolean;
   collapsed: boolean;
   onToggle: () => void;
+  reorder: ReorderControls | null;
 }) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={!collapsed}
-      className="flex w-full items-center gap-3 px-5 py-3.5 text-left transition hover:bg-brand-50/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-brand-400"
-    >
-      <svg
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-        className={`h-4 w-4 flex-none text-slate-400 transition-transform ${collapsed ? "" : "rotate-90"}`}
-      >
-        <path d="m9 18 6-6-6-6" />
-      </svg>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-semibold text-slate-900">{group.name}</h3>
-          {group.upcomingCount > 0 && (
-            <span className="badge bg-brand-100 text-brand-800">
-              {group.upcomingCount} upcoming
-            </span>
-          )}
-        </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
-          <span>
-            {group.totalOccurrences} date{group.totalOccurrences === 1 ? "" : "s"}
+  // The summary line is identical whether or not the section can collapse, so
+  // it lives here once and is wrapped in a button only when there is something
+  // to toggle.
+  const summary = (
+    <div className="min-w-0 flex-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="font-semibold text-slate-900">{group.name}</h3>
+        {group.upcomingCount > 0 && (
+          <span className="badge bg-brand-100 text-brand-800">
+            {group.upcomingCount} upcoming
           </span>
-          <span aria-hidden>·</span>
-          <span>{group.totalConfirmed} of {group.totalAttendees} checked in</span>
-          <span aria-hidden>·</span>
-          <span className="font-medium text-brand-700">
-            {formatHours(group.totalHours)} hrs credited
-          </span>
-          {group.nextDate && (
-            <>
-              <span aria-hidden>·</span>
-              <span>Next {formatDate(group.nextDate)}</span>
-            </>
-          )}
-        </div>
+        )}
       </div>
-    </button>
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
+        <span>
+          {group.totalOccurrences} date{group.totalOccurrences === 1 ? "" : "s"}
+        </span>
+        <span aria-hidden>·</span>
+        <span>{group.totalConfirmed} of {group.totalAttendees} checked in</span>
+        <span aria-hidden>·</span>
+        <span className="font-medium text-brand-700">
+          {formatHours(group.totalHours)} hrs credited
+        </span>
+        {group.nextDate && (
+          <>
+            <span aria-hidden>·</span>
+            <span>Next {formatDate(group.nextDate)}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex items-stretch">
+      {reorder && (
+        <div className="flex flex-none items-center gap-0.5 border-r border-slate-100 py-2 pl-2 pr-1.5">
+          {/* Drag handle (desktop) — the arrows below are the same action, and
+              are what actually works on a phone or with a keyboard. */}
+          <span
+            draggable
+            onDragStart={reorder.onDragStart}
+            onDragEnd={reorder.onDragEnd}
+            aria-hidden
+            title="Drag to reorder"
+            className="cursor-grab select-none rounded-md p-1.5 text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 active:cursor-grabbing"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+              <circle cx="9" cy="6" r="1.6" />
+              <circle cx="15" cy="6" r="1.6" />
+              <circle cx="9" cy="12" r="1.6" />
+              <circle cx="15" cy="12" r="1.6" />
+              <circle cx="9" cy="18" r="1.6" />
+              <circle cx="15" cy="18" r="1.6" />
+            </svg>
+          </span>
+          <div className="flex flex-col">
+            <button
+              type="button"
+              onClick={reorder.onMoveUp}
+              disabled={reorder.busy || reorder.index === 0}
+              aria-label={`Move ${group.name} up`}
+              title="Move up"
+              className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                <path d="m18 15-6-6-6 6" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={reorder.onMoveDown}
+              disabled={reorder.busy || reorder.index === reorder.total - 1}
+              aria-label={`Move ${group.name} down`}
+              title="Move down"
+              className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          className="flex flex-1 items-center gap-3 px-5 py-3.5 text-left transition hover:bg-brand-50/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-brand-400"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+            className={`h-4 w-4 flex-none text-slate-400 transition-transform ${collapsed ? "" : "rotate-90"}`}
+          >
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+          {summary}
+        </button>
+      ) : (
+        // A single date has nothing to collapse, so this is a plain heading —
+        // no chevron, nothing to click that does nothing.
+        <div className="flex flex-1 items-center gap-3 px-5 py-3.5">{summary}</div>
+      )}
+    </div>
   );
 }
 
@@ -293,6 +517,7 @@ function OccurrenceRow({
   event,
   today,
   hours,
+  readOnly,
   editing,
   onEdit,
   onCancel,
@@ -303,6 +528,7 @@ function OccurrenceRow({
   event: VolunteerEvent;
   today: string;
   hours: number;
+  readOnly: boolean;
   editing: boolean;
   onEdit: () => void;
   onCancel: () => void;
@@ -383,21 +609,23 @@ function OccurrenceRow({
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onEdit();
-            }}
-            aria-label={`Edit ${getEventDisplayName(event)} on ${formatDate(event.date)}`}
-            title="Edit date, times and expected hours"
-            className="rounded-md p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-            </svg>
-          </button>
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit();
+              }}
+              aria-label={`Edit ${getEventDisplayName(event)} on ${formatDate(event.date)}`}
+              title="Edit date, times and expected hours"
+              className="rounded-md p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+              </svg>
+            </button>
+          )}
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-4 w-4 flex-none text-slate-300">
             <path d="m9 18 6-6-6-6" />
           </svg>

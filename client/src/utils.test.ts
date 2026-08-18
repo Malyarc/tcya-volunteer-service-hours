@@ -9,6 +9,9 @@ import {
   isoToLocalInput,
   localInputToIso,
   groupEventsByName,
+  isCollapsibleGroup,
+  moveItem,
+  sortEventGroups,
 } from "./utils";
 import type { RosterEntry, Submission, VolunteerEvent } from "./types";
 
@@ -399,5 +402,157 @@ describe("groupEventsByName", () => {
 
   it("returns nothing for an empty event list", () => {
     expect(groupEventsByName([], [], TODAY)).toEqual([]);
+  });
+});
+
+describe("moveItem", () => {
+  const list = ["a", "b", "c", "d"];
+
+  it("moves an item down and up", () => {
+    expect(moveItem(list, 0, 2)).toEqual(["b", "c", "a", "d"]);
+    expect(moveItem(list, 3, 1)).toEqual(["a", "d", "b", "c"]);
+  });
+
+  it("moves one step, the way the up/down buttons do", () => {
+    expect(moveItem(list, 2, 1)).toEqual(["a", "c", "b", "d"]);
+    expect(moveItem(list, 1, 2)).toEqual(["a", "c", "b", "d"]);
+  });
+
+  it("clamps a target past either end instead of losing the item", () => {
+    expect(moveItem(list, 2, -5)).toEqual(["c", "a", "b", "d"]);
+    expect(moveItem(list, 1, 99)).toEqual(["a", "c", "d", "b"]);
+  });
+
+  it("is a no-op for an out-of-range source or a move to the same slot", () => {
+    expect(moveItem(list, 9, 0)).toEqual(list);
+    expect(moveItem(list, -1, 0)).toEqual(list);
+    expect(moveItem(list, 2, 2)).toEqual(list);
+  });
+
+  it("never mutates the input", () => {
+    const original = [...list];
+    moveItem(list, 0, 3);
+    expect(list).toEqual(original);
+  });
+});
+
+describe("event section ordering", () => {
+  const TODAY = "2026-03-10";
+
+  // Two upcoming types and one past type, so the automatic order is
+  // deterministic: Recycling (soonest) → Beach (later) → Bake Sale (past).
+  function threeGroups() {
+    return groupEventsByName(
+      [
+        evt({ id: "e1", name: "Culture - Beach Cleanup", date: "2026-04-01" }),
+        evt({ id: "e2", name: "Recycling", date: "2026-03-12" }),
+        evt({ id: "e3", name: "Others - please specify", customName: "Bake Sale", date: "2026-01-05" }),
+      ],
+      [],
+      TODAY
+    );
+  }
+
+  it("uses the automatic order when nothing has been placed by hand", () => {
+    expect(threeGroups().map((g) => g.name)).toEqual([
+      "Recycling",
+      "Culture - Beach Cleanup",
+      "Bake Sale",
+    ]);
+  });
+
+  it("puts the admin's saved order first, exactly as saved", () => {
+    const order = ["Bake Sale", "Culture - Beach Cleanup", "Recycling"];
+    expect(sortEventGroups(threeGroups(), order).map((g) => g.name)).toEqual(order);
+  });
+
+  it("keeps an unplaced section visible, in automatic order, below the placed ones", () => {
+    // Only Bake Sale was dragged; the other two keep the automatic rule and
+    // follow it — a brand-new event type can never be hidden by a stale order.
+    expect(sortEventGroups(threeGroups(), ["Bake Sale"]).map((g) => g.name)).toEqual([
+      "Bake Sale",
+      "Recycling",
+      "Culture - Beach Cleanup",
+    ]);
+  });
+
+  it("ignores saved names that no longer match a section", () => {
+    const order = ["Deleted Event Type", "Recycling"];
+    expect(sortEventGroups(threeGroups(), order).map((g) => g.name)).toEqual([
+      "Recycling",
+      "Culture - Beach Cleanup",
+      "Bake Sale",
+    ]);
+  });
+
+  it("does not mutate the groups it was given", () => {
+    const groups = threeGroups();
+    const before = groups.map((g) => g.name);
+    sortEventGroups(groups, ["Bake Sale"]);
+    expect(groups.map((g) => g.name)).toEqual(before);
+  });
+
+  it("groupEventsByName applies the saved order end-to-end", () => {
+    const groups = groupEventsByName(
+      [
+        evt({ id: "e1", name: "Culture - Beach Cleanup", date: "2026-04-01" }),
+        evt({ id: "e2", name: "Recycling", date: "2026-03-12" }),
+      ],
+      [],
+      TODAY,
+      ["Culture - Beach Cleanup", "Recycling"]
+    );
+    expect(groups.map((g) => g.name)).toEqual(["Culture - Beach Cleanup", "Recycling"]);
+  });
+
+  it("a moved section stays put when the list is saved and re-read", () => {
+    // What the page actually does: move index 2 to the top, save those names,
+    // then re-group with them. The result must match what the user just saw.
+    const groups = threeGroups();
+    const names = moveItem(groups, 2, 0).map((g) => g.name);
+    expect(sortEventGroups(threeGroups(), names).map((g) => g.name)).toEqual(names);
+  });
+});
+
+describe("isCollapsibleGroup", () => {
+  const TODAY = "2026-03-10";
+
+  it("is false for a section with a single date (no dropdown to show)", () => {
+    const [only] = groupEventsByName(
+      [evt({ id: "e1", name: "Recycling", date: "2026-03-12" })],
+      [],
+      TODAY
+    );
+    expect(only.totalOccurrences).toBe(1);
+    expect(isCollapsibleGroup(only)).toBe(false);
+  });
+
+  it("is true as soon as the section has a second date", () => {
+    const [group] = groupEventsByName(
+      [
+        evt({ id: "e1", name: "Recycling", date: "2026-03-12" }),
+        evt({ id: "e2", name: "Recycling", date: "2026-04-12" }),
+      ],
+      [],
+      TODAY
+    );
+    expect(group.totalOccurrences).toBe(2);
+    expect(isCollapsibleGroup(group)).toBe(true);
+  });
+
+  it("decides per section, not per page", () => {
+    const groups = groupEventsByName(
+      [
+        evt({ id: "e1", name: "Recycling", date: "2026-03-12" }),
+        evt({ id: "e2", name: "Recycling", date: "2026-04-12" }),
+        evt({ id: "e3", name: "Culture - Beach Cleanup", date: "2026-05-01" }),
+      ],
+      [],
+      TODAY
+    );
+    expect(groups.map((g) => [g.name, isCollapsibleGroup(g)])).toEqual([
+      ["Recycling", true],
+      ["Culture - Beach Cleanup", false],
+    ]);
   });
 });

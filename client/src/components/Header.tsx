@@ -1,19 +1,22 @@
+import type { AccountRole } from "../types";
+
 interface HeaderProps {
   totalHours: number;
   totalSubmissions: number;
   activeVolunteers: number;
-  isAdmin: boolean;
-  onAdminLogin: () => void;
-  onAdminLogout: () => void;
+  // Which account is signed in, or null for the public view.
+  role: AccountRole | null;
+  onLogin: () => void;
+  onLogout: () => void;
 }
 
 export function Header({
   totalHours,
   totalSubmissions,
   activeVolunteers,
-  isAdmin,
-  onAdminLogin,
-  onAdminLogout,
+  role,
+  onLogin,
+  onLogout,
 }: HeaderProps) {
   return (
     <header className="relative overflow-hidden">
@@ -28,9 +31,9 @@ export function Header({
 
       {/* Top utility bar with admin login (left) and submit button (right). */}
       <div className="relative mx-auto flex max-w-6xl items-center justify-between px-6 pt-4 text-white">
-        {!isAdmin ? (
+        {!role ? (
           <button
-            onClick={onAdminLogin}
+            onClick={onLogin}
             className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3.5 py-1.5 text-xs font-semibold uppercase tracking-wider text-white ring-1 ring-white/30 backdrop-blur-sm transition hover:bg-white/20"
           >
             <svg
@@ -45,11 +48,19 @@ export function Header({
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
               <path d="M7 11V7a5 5 0 0 1 10 0v4" />
             </svg>
-            Admin Login
+            Sign In
           </button>
         ) : (
           <div className="inline-flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-accent-300/95 px-3 py-1 text-xs font-bold uppercase tracking-wider text-brand-900 ring-1 ring-accent-200">
+            {/* The badge names the account, so nobody scanning at the door has
+                to guess why an edit control isn't there. */}
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wider ring-1 ${
+                role === "admin"
+                  ? "bg-accent-300/95 text-brand-900 ring-accent-200"
+                  : "bg-emerald-300/95 text-emerald-950 ring-emerald-200"
+              }`}
+            >
               <svg
                 viewBox="0 0 24 24"
                 fill="none"
@@ -59,12 +70,19 @@ export function Header({
                 strokeLinejoin="round"
                 className="h-3.5 w-3.5"
               >
-                <path d="M12 2L3 7v6c0 5 4 9 9 11 5-2 9-6 9-11V7l-9-5z" />
+                {role === "admin" ? (
+                  <path d="M12 2L3 7v6c0 5 4 9 9 11 5-2 9-6 9-11V7l-9-5z" />
+                ) : (
+                  <>
+                    <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+                    <line x1="7" y1="12" x2="17" y2="12" />
+                  </>
+                )}
               </svg>
-              Admin
+              {role === "admin" ? "Admin" : "Officer"}
             </span>
             <button
-              onClick={onAdminLogout}
+              onClick={onLogout}
               className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-white/90 ring-1 ring-white/30 backdrop-blur-sm transition hover:bg-white/20"
             >
               <svg
