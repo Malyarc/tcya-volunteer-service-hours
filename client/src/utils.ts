@@ -97,6 +97,88 @@ export function localInputToIso(val: string): string | null {
   return d.toISOString();
 }
 
+// ---------- Derived hours, mirrored from the server ----------
+//
+// The SERVER owns hours: `server/src/hours.js` derives them from the check-in /
+// check-out timestamps and stores them on the submission. These helpers are a
+// faithful mirror of that rule, used ONLY to show the admin what a set of times
+// will be worth BEFORE they save (and to fill the event page's Hours column
+// straight from the timestamps, with no extra round-trip).
+//
+// They must stay byte-identical in behaviour to hours.js — `utils.test.ts` pins
+// the same cases the server's `hours.test.js` pins. If you change one, change
+// both, or the number the admin is shown stops matching the number that is
+// actually credited.
+
+// checkout − checkin in hours, rounded to the nearest quarter (the app's
+// 15-minute granularity). 0 when either is missing or checkout is not after
+// check-in. Mirrors hoursBetween().
+export function hoursBetweenIso(
+  checkinAt?: string | null,
+  checkoutAt?: string | null
+): number {
+  if (!checkinAt || !checkoutAt) return 0;
+  const ms = Date.parse(checkoutAt) - Date.parse(checkinAt);
+  if (!(ms > 0)) return 0;
+  return Math.round((ms / 3600000) * 4) / 4;
+}
+
+// Both timestamps set, checkout strictly after check-in. Deliberately SEPARATE
+// from the rounded hours so a genuine but very short (< 7.5 min) shift still
+// counts as complete service worth 0 hours, rather than vanishing. Mirrors
+// isComplete().
+export function isCompleteAttendance(
+  checkinAt?: string | null,
+  checkoutAt?: string | null
+): boolean {
+  if (!checkinAt || !checkoutAt) return false;
+  return Date.parse(checkoutAt) > Date.parse(checkinAt);
+}
+
+// The hours a person is actually CREDITED: capped at the event's expected hours
+// for ordinary volunteers, uncapped for officers, uncapped for everyone when
+// the event sets no expected hours. Mirrors creditedHours().
+export function creditedHoursFor(
+  rawHours: number,
+  expectedHours: number | null | undefined,
+  role: VolunteerRole | undefined
+): number {
+  const raw = Number(rawHours) || 0;
+  // Fail-closed exactly like the server: anything that is not explicitly
+  // "officer" is an ordinary, capped volunteer.
+  if (role === "officer") return raw;
+  if (expectedHours === null || expectedHours === undefined) return raw;
+  const cap = Number(expectedHours);
+  if (!Number.isFinite(cap) || cap < 0) return raw;
+  return Math.min(raw, Math.round(cap * 4) / 4);
+}
+
+// What one attendance row is worth, in the shape the UI needs.
+//   complete — is this countable service at all (⇒ a submission exists)?
+//   raw      — the full span between the two timestamps
+//   credited — what actually counts, after the cap
+//   capped   — the cap bit, so the UI can explain the difference instead of
+//              looking like a rounding bug
+export interface DerivedHours {
+  complete: boolean;
+  raw: number;
+  credited: number;
+  capped: boolean;
+}
+
+export function deriveHours(
+  checkinAt: string | null | undefined,
+  checkoutAt: string | null | undefined,
+  expectedHours: number | null | undefined,
+  role: VolunteerRole | undefined
+): DerivedHours {
+  const complete = isCompleteAttendance(checkinAt, checkoutAt);
+  if (!complete) return { complete: false, raw: 0, credited: 0, capped: false };
+  const raw = hoursBetweenIso(checkinAt, checkoutAt);
+  const credited = creditedHoursFor(raw, expectedHours, role);
+  return { complete: true, raw, credited, capped: credited < raw };
+}
+
 // A submission's hours only count when:
 //   - the event still exists, AND
 //   - the volunteer's attendance row has BOTH staff check-in and volunteer

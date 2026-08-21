@@ -90,6 +90,31 @@ Postgres** database.
    bare `Number()` maps `null`/`false`/`""`/`[]` to 0 (silently CLEARING a
    conduct record) and `true` to 1.
 
+1e. **The client MIRRORS the hours rule; the server OWNS it.** `deriveHours` /
+   `hoursBetweenIso` / `creditedHoursFor` in `client/src/utils.ts` are a faithful
+   copy of `server/src/hours.js`. They fill the "Hours (auto)" field while an
+   admin types check-in/out times, and the event page's Hours column, straight
+   from the timestamps. DISPLAY only — nothing is posted back; the server
+   re-derives on save. If you change the rule (rounding, the cap, the officer
+   exemption) change BOTH: `client/src/utils.test.ts` pins the same cases as
+   `server/test/hours.test.js` precisely so a drift fails the bar instead of
+   promising an admin one number and crediting another.
+
+1f. **Badges are labels, never permissions.** `client/src/badges.ts` holds the
+   hard-coded TC Academy list; `VolunteerBadges` (components/RoleBadge.tsx)
+   renders Officer + TC Academy together everywhere a name appears — roster,
+   Volunteers tab, watchlist, event attendance. The Officer badge reflects
+   `volunteers.role`, which really does lift the hours cap; TC Academy affects
+   nothing at all, so never feed it into a calculation or a guard. Names match
+   normalized (trim / collapse inner space / case-fold) and an entry may carry
+   `alsoSpelled` variants — the roster says "Issac Cao", the chapter writes
+   "Isaac", and both must badge. A name matching nobody is a SILENT no-op, which
+   is why `tcAcademyNamesMissingFrom` surfaces it as an amber note in the
+   Volunteers panel. `VolunteerBadges` returns a fragment so the badges are
+   direct flex children of the caller's name row; that is what keeps
+   name-to-badge and badge-to-badge spacing identical and lets a second badge
+   wrap rather than widen the column.
+
 2. **Deleting an event (or removing a volunteer from one) deletes the derived
    submissions** so no orphaned "pending" rows linger in the roster.
    `submissions.event_id` has **no foreign key**; `deleteEvent` deletes the
@@ -157,9 +182,11 @@ npm run build --prefix client   # tsc -b && vite build
   (markers included) and boots a FRESH store, so each one re-runs the real cold
   start: DDL + seed + data migrations. Also holds the Postgres-only migration
   tests (marker guards, archive-before-purge).
-- Client: `client/src/{utils,qr,volunteerExports}.test.ts` — incl. the
+- Client: `client/src/{utils,qr,volunteerExports,badges}.test.ts` — incl. the
   roster==volunteers guard, strike aggregation, event grouping, the saved
-  section order (`sortEventGroups` / `moveItem`) and `isCollapsibleGroup`.
+  section order (`sortEventGroups` / `moveItem`), `isCollapsibleGroup`, the
+  TC Academy badge list (+ its missing-name check) and the hours mirror, whose
+  cases deliberately duplicate `server/test/hours.test.js`.
 
 **MANDATORY pre-deploy gate:** the default `npm test` is memory-only. Because the
 production data layer is Postgres, run the parity suite before every deploy.

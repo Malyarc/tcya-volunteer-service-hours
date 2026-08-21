@@ -9,8 +9,9 @@ import {
 import { VolunteerFormModal } from "./VolunteerFormModal";
 import { VolunteerQRModal } from "./VolunteerQRModal";
 import { Avatar } from "../Avatar";
-import { RoleBadge, StrikeCount } from "../RoleBadge";
+import { StrikeCount, VolunteerBadges } from "../RoleBadge";
 import { STRIKE_WATCHLIST_THRESHOLD, formatHours } from "../../utils";
+import { tcAcademyNamesMissingFrom } from "../../badges";
 import type { VolunteerSummary } from "../../utils";
 
 interface Props {
@@ -47,6 +48,15 @@ export function VolunteersPanel({
     for (const s of summaries) m.set(s.name, s);
     return m;
   }, [summaries]);
+
+  // TC Academy badge names that match nobody on the roster. Normally empty; it
+  // only appears after somebody edits the hard-coded list in badges.ts and
+  // misspells a name — which would otherwise be an invisible no-op, since a
+  // name matching nobody simply never renders a badge.
+  const missingBadgeNames = useMemo(
+    () => tcAcademyNamesMissingFrom(volunteers.map((v) => v.name)),
+    [volunteers]
+  );
 
   // Everyone at or over the chapter's review threshold, worst first.
   const watchlist = useMemo(
@@ -162,12 +172,14 @@ export function VolunteersPanel({
                 <tbody className="divide-y divide-red-100 bg-white">
                   {watchlist.map(({ v, strikes }) => (
                     <tr key={v.id} className="hover:bg-red-50/40">
-                      <td className="whitespace-nowrap px-5 py-2.5">
+                      <td className="px-5 py-2.5">
                         <div className="flex items-center gap-3">
                           <Avatar name={v.name} />
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="font-medium text-slate-900">{v.name}</span>
-                            <RoleBadge role={v.role} size="sm" />
+                          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+                            <span className="whitespace-nowrap font-medium text-slate-900">
+                              {v.name}
+                            </span>
+                            <VolunteerBadges name={v.name} role={v.role} size="sm" />
                           </div>
                         </div>
                       </td>
@@ -253,6 +265,18 @@ export function VolunteersPanel({
         </div>
       )}
 
+      {/* Only ever shown when the hard-coded badge list has drifted from the
+          roster — a silent typo is the one way this feature can fail. */}
+      {!loading && volunteers.length > 0 && missingBadgeNames.length > 0 && (
+        <div className="mx-5 mt-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+          <strong className="font-semibold">TC Academy list:</strong>{" "}
+          {missingBadgeNames.join(", ")}{" "}
+          {missingBadgeNames.length === 1 ? "is" : "are"} not on the roster, so{" "}
+          {missingBadgeNames.length === 1 ? "that badge" : "those badges"} won't
+          appear. Fix the spelling in <code>client/src/badges.ts</code>.
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <table className="min-w-full divide-y divide-slate-100">
           <thead className="bg-slate-50/70">
@@ -281,12 +305,14 @@ export function VolunteersPanel({
             )}
             {filtered.map((v) => (
                 <tr key={v.id} className="hover:bg-brand-50/30">
-                  <td className="whitespace-nowrap px-5 py-3">
+                  <td className="px-5 py-3">
                     <div className="flex items-center gap-3">
                       <Avatar name={v.name} />
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-medium text-slate-900">{v.name}</span>
-                        <RoleBadge role={v.role} size="sm" />
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+                        <span className="whitespace-nowrap font-medium text-slate-900">
+                          {v.name}
+                        </span>
+                        <VolunteerBadges name={v.name} role={v.role} size="sm" />
                       </div>
                     </div>
                   </td>

@@ -21,6 +21,10 @@ out of events** with a phone camera, and track cumulative service hours.
 
 - Hero dashboard with total confirmed hours and active volunteers.
 - Alphabetical volunteer roster — click a name to see every confirmed log.
+- **Recognition badges** beside a name, visible on every page: green **Officer**
+  (their hours are uncapped) and light-blue **TC Academy** (Tzu Chi Academy
+  students). A volunteer can carry both. The TC Academy list is hard-coded in
+  `client/src/badges.ts` — edit it there and redeploy.
 - One-click **Download Excel Report** and per-volunteer / per-event
   **certificate PDFs**.
 - Auto-refreshes when the tab regains focus.
@@ -44,8 +48,11 @@ Volunteers · Events** so nothing needs scrolling.
     check-out time). Continuous scanning with a duplicate-scan guard, an audible
     beep, live feedback, and a manual code / volunteer fallback if the camera
     isn't available.
-  - Attendance table shows each volunteer's code, check-in time, and check-out
-    time. **Edit the times manually** any time.
+  - Attendance table shows each volunteer's code, check-in time, check-out
+    time and **credited hours**. **Edit the times manually** any time.
+  - Editing times **auto-calculates the hours as you type** — set both times and
+    the "Hours (auto)" field fills in with exactly what will be credited,
+    including the event's expected-hours cap, before you save.
   - Pre-register volunteers from the picker, or just scan them in on the day.
 - **Service hours are derived from the check-in / check-out times**
   (hours = checkout − checkin). There is no separate "log hours" form.
@@ -200,6 +207,7 @@ client/                         React + TS app (Vite)
                                 VolunteersPanel, VolunteerFormModal, VolunteerQRModal,
                                 ScannerModal
     qr.ts                       QR payload build/parse + image rendering
+    badges.ts                   Hard-coded TC Academy list (edit here + redeploy)
     volunteerExports.ts         Bulk QR ID-card PDF + roster Excel
     api.ts / types.ts / utils.ts
 server/

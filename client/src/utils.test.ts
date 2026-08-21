@@ -12,6 +12,10 @@ import {
   isCollapsibleGroup,
   moveItem,
   sortEventGroups,
+  hoursBetweenIso,
+  isCompleteAttendance,
+  creditedHoursFor,
+  deriveHours,
 } from "./utils";
 import type { RosterEntry, Submission, VolunteerEvent } from "./types";
 
@@ -554,5 +558,148 @@ describe("isCollapsibleGroup", () => {
       ["Recycling", true],
       ["Culture - Beach Cleanup", false],
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Derived hours — the client's mirror of server/src/hours.js
+//
+// These cases are deliberately the SAME ones server/test/hours.test.js pins.
+// The event page shows the admin what a set of times will be worth before they
+// save; if this mirror drifts from the server, the app promises one number and
+// credits another. Every expected value below is hand-computed against the rule
+// "hours = round((checkout − checkin) * 4) / 4, capped at expectedHours for
+// ordinary volunteers".
+// ---------------------------------------------------------------------------
+
+describe("hoursBetweenIso — mirrors the server's hoursBetween", () => {
+  it("returns exact multiples of an hour as-is", () => {
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T19:00:00Z")).toBe(3);
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T17:00:00Z")).toBe(1);
+  });
+
+  it("treats 90 minutes as 1.5", () => {
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T17:30:00Z")).toBe(1.5);
+  });
+
+  it("rounds to the nearest quarter hour (7 min -> 0, 8 min -> 0.25)", () => {
+    // 7 min = 0.11667h; *4 = 0.4667; round 0 -> 0.
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T16:07:00Z")).toBe(0);
+    // 8 min = 0.13333h; *4 = 0.5333; round 1 -> 0.25.
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T16:08:00Z")).toBe(0.25);
+    // 22 min -> 0.25, 23 min -> 0.5 (the .5 boundary).
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T16:22:00Z")).toBe(0.25);
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T16:23:00Z")).toBe(0.5);
+    // 142 min = 2.36667h; *4 = 9.4667; round 9 -> 2.25.
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T18:22:00Z")).toBe(2.25);
+  });
+
+  it("returns 0 for non-positive gaps and missing inputs", () => {
+    expect(hoursBetweenIso("2026-03-15T19:00:00Z", "2026-03-15T16:00:00Z")).toBe(0);
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T16:00:00Z")).toBe(0);
+    expect(hoursBetweenIso(null, "2026-03-15T16:00:00Z")).toBe(0);
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", null)).toBe(0);
+    expect(hoursBetweenIso(null, null)).toBe(0);
+    expect(hoursBetweenIso("", "")).toBe(0);
+  });
+
+  it("is timezone/DST independent (epoch math, like the server)", () => {
+    // A 3-hour absolute gap straddling US spring-forward is still 3h.
+    expect(hoursBetweenIso("2026-03-08T08:30:00Z", "2026-03-08T11:30:00Z")).toBe(3);
+  });
+});
+
+describe("isCompleteAttendance — mirrors the server's isComplete", () => {
+  it("is true only when checkout is strictly after check-in", () => {
+    expect(isCompleteAttendance("2026-03-15T16:00:00Z", "2026-03-15T19:00:00Z")).toBe(true);
+    expect(isCompleteAttendance("2026-03-15T16:00:00Z", "2026-03-15T16:00:00Z")).toBe(false);
+    expect(isCompleteAttendance("2026-03-15T19:00:00Z", "2026-03-15T16:00:00Z")).toBe(false);
+    expect(isCompleteAttendance(null, "2026-03-15T16:00:00Z")).toBe(false);
+    expect(isCompleteAttendance("2026-03-15T16:00:00Z", null)).toBe(false);
+  });
+
+  it("stays decoupled from rounding: a 5-minute visit is complete but worth 0", () => {
+    // The same decoupling the server pins — the row must not vanish.
+    expect(hoursBetweenIso("2026-03-15T16:00:00Z", "2026-03-15T16:05:00Z")).toBe(0);
+    expect(isCompleteAttendance("2026-03-15T16:00:00Z", "2026-03-15T16:05:00Z")).toBe(true);
+  });
+});
+
+describe("creditedHoursFor — mirrors the server's creditedHours cap", () => {
+  it("caps an ordinary volunteer at the event's expected hours", () => {
+    expect(creditedHoursFor(5.5, 4, "volunteer")).toBe(4);
+  });
+
+  it("never caps an officer — set-up and clean-up time is real service", () => {
+    expect(creditedHoursFor(5.5, 4, "officer")).toBe(5.5);
+  });
+
+  it("never caps anyone when the event sets no expected hours", () => {
+    // This is what keeps every pre-existing event's hours unchanged.
+    expect(creditedHoursFor(5.5, null, "volunteer")).toBe(5.5);
+    expect(creditedHoursFor(5.5, undefined, "volunteer")).toBe(5.5);
+  });
+
+  it("leaves a span under the cap alone", () => {
+    expect(creditedHoursFor(2.5, 4, "volunteer")).toBe(2.5);
+  });
+
+  it("fails CLOSED: an unknown or missing role is treated as capped", () => {
+    // Matches the server's isOfficerRole(), where anything not exactly
+    // "officer" is an ordinary volunteer — a corrupt role can only ever remove
+    // the exemption, never grant it.
+    expect(creditedHoursFor(5.5, 4, undefined)).toBe(4);
+    expect(creditedHoursFor(5.5, 4, "captain" as never)).toBe(4);
+  });
+
+  it("rounds the cap itself to the quarter-hour grid, like normalizeExpectedHours", () => {
+    expect(creditedHoursFor(5, 3.3, "volunteer")).toBe(3.25);
+  });
+
+  it("ignores a nonsensical negative cap rather than zeroing someone's credit", () => {
+    expect(creditedHoursFor(3, -1, "volunteer")).toBe(3);
+  });
+});
+
+describe("deriveHours — what the event page shows and the editor auto-fills", () => {
+  it("reports an incomplete row as nothing to credit", () => {
+    const d = deriveHours("2026-03-15T16:00:00Z", null, 4, "volunteer");
+    expect(d).toEqual({ complete: false, raw: 0, credited: 0, capped: false });
+  });
+
+  it("computes credited hours for a complete, uncapped row", () => {
+    const d = deriveHours("2026-03-15T16:00:00Z", "2026-03-15T19:00:00Z", 4, "volunteer");
+    expect(d).toEqual({ complete: true, raw: 3, credited: 3, capped: false });
+  });
+
+  it("flags the cap so the UI can explain the difference", () => {
+    // 16:00 -> 21:30 = 5.5h on site, capped to the event's 4.
+    const d = deriveHours("2026-03-15T16:00:00Z", "2026-03-15T21:30:00Z", 4, "volunteer");
+    expect(d).toEqual({ complete: true, raw: 5.5, credited: 4, capped: true });
+  });
+
+  it("does not flag a cap for an officer working the same long day", () => {
+    const d = deriveHours("2026-03-15T16:00:00Z", "2026-03-15T21:30:00Z", 4, "officer");
+    expect(d).toEqual({ complete: true, raw: 5.5, credited: 5.5, capped: false });
+  });
+
+  it("keeps a complete sub-quarter-hour visit complete at 0 hours", () => {
+    const d = deriveHours("2026-03-15T16:00:00Z", "2026-03-15T16:05:00Z", 4, "volunteer");
+    expect(d).toEqual({ complete: true, raw: 0, credited: 0, capped: false });
+  });
+
+  it("agrees with the roster: credited hours equal the stored submission hours", () => {
+    // The event page derives from timestamps; the roster reads the server's
+    // stored submission. Same inputs must give the same number, or the two
+    // pages appear to disagree about one volunteer's hours.
+    const stored = sub({ hours: 4, rawHours: 5.5 });
+    const derived = deriveHours(
+      "2026-03-15T16:00:00Z",
+      "2026-03-15T21:30:00Z",
+      4,
+      "volunteer"
+    );
+    expect(derived.credited).toBe(stored.hours);
+    expect(derived.raw).toBe(stored.rawHours);
   });
 });

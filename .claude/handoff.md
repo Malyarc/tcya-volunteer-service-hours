@@ -2,7 +2,82 @@
 
 Single source of truth for the project's current state. Last updated: 2026-08-20.
 
-## Round 9 (latest) — officers can record conduct strikes
+## Round 10 (latest) — TC Academy badges + auto-calculated hours
+
+### 1. A second badge: TC Academy
+
+Six chapter-named students now carry a light-blue **TC Academy** badge beside
+their name, on every page a name appears: the public roster, the admin roster,
+the Volunteers tab, the strike watchlist and an event's attendance list (admin
+AND officer). Four of the six are also Officers, so their rows carry both.
+
+- `client/src/badges.ts` is the hard-coded list. Names match NORMALIZED (trim,
+  collapse inner whitespace, case-fold), and an entry can carry `alsoSpelled`
+  variants.
+- **The roster spells one of them "Issac Cao"; the chapter wrote "Isaac".** Both
+  spellings badge, so it is right today and stays right if the roster is fixed.
+  This was caught by checking the six names against the live roster rather than
+  trusting them — a mismatched name is a SILENT no-op.
+- Because silence is the failure mode, `tcAcademyNamesMissingFrom` shows an
+  amber note in the Volunteers panel naming any badge entry that matches nobody.
+  Invisible in the healthy state.
+- `VolunteerBadges` renders Officer + TC Academy as a FRAGMENT, so both become
+  direct children of the caller's existing flex name row. Measured live: equal
+  badge heights, identical 6px name→badge and badge→badge gaps, 0px vertical
+  offset from the name.
+
+### 2. Hours are calculated and filled in as the admin types
+
+Editing an attendee's times now shows a read-only **"Hours (auto)"** field that
+fills in the moment both times are set, plus a line saying "3 hrs will be
+credited to <name> when you save" — and, when the event's cap bites, "6 hrs on
+site, capped at this event's expected hours for ordinary volunteers".
+
+- The attendance table also gained an **Hours** column, so credited hours are
+  visible per person without opening the editor. It shows an em dash while a row
+  is incomplete (checked in but not out is the normal mid-event state) and an
+  amber "capped" tag when the cap applied — the same treatment the roster uses.
+- `deriveHours` / `hoursBetweenIso` / `creditedHoursFor` in `utils.ts` mirror
+  `server/src/hours.js` exactly (invariant 1e). DISPLAY only — the server still
+  owns the number and re-derives on save. `utils.test.ts` pins the SAME cases as
+  `server/test/hours.test.js` so a drift fails the bar.
+- Saving times now also calls `onHoursChanged()`, so the roster totals update
+  immediately instead of staying stale until the admin navigates back.
+
+### 3. Table alignment pass
+
+- Every table audited in the browser, comparing each column's computed header
+  alignment against its cells'. Fixed: the roster's Events count (left-aligned
+  under a left header while the two other numeric columns were right/centre) is
+  now centred with `tabular-nums`, hours figures are `tabular-nums` so digits
+  stack, and the trailing chevron header now matches its cells.
+- Event page: the Check-in/Check-out headings no longer break mid-word
+  ("CHECK-" / "OUT"), and the attendance table gets more of the row
+  (`2.1fr` vs `1.6fr`) now that it carries a sixth column.
+- **Every colSpan on the event page derives from one `COLUMN_COUNT(readOnly)`**,
+  so adding a column can't leave the empty state or the open editor spanning the
+  wrong width — the exact bug the new Hours column would otherwise have caused.
+- **Public roster now fits a 375px phone** (was 462px in a 341px wrapper, i.e.
+  121px of sideways scroll — pre-existing, and measured to confirm the new badge
+  added 0px). Achieved by shortening the "Total Hours" heading to "Hours" on
+  phones, hiding the almost-always-empty Strikes column below `sm` (as Grade,
+  Events and Certificate already were), tightening the chevron column, and
+  letting a long name wrap on phones only.
+
+### Verified
+
+Green bar with exit codes captured: server memory **107 pass**, live-Postgres
+parity **188 pass**, client **91 pass** (was 60 — 31 new), build clean.
+**Adversarially audited**: 7 mutations (unrounded hours, cap removed, officer
+exemption removed, reversed times counted as complete, a badge name dropped, the
+Issac/Isaac alias removed, whitespace normalization removed) — each caught.
+Run live at 1280px and 375px as admin AND officer: badges render on every
+surface, the editor auto-filled 3 hrs → 0.25 hrs for 22 min → "—" for reversed
+times → 4 hrs capped from 6, and the saved value matched the promise exactly
+(server credited 3 where the editor showed 3). Roster header total updated
+13.5 → 16.5 on save without navigating.
+
+## Round 9 — officers can record conduct strikes
 
 The chapter's ask: the officer at the door is the person who actually sees the
 conduct, so make the strike theirs to record instead of something they have to

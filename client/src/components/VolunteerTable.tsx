@@ -12,7 +12,7 @@ import {
   downloadVolunteerCertificate,
 } from "../certificate";
 import { Avatar } from "./Avatar";
-import { RoleBadge, StrikeCount } from "./RoleBadge";
+import { StrikeCount, VolunteerBadges } from "./RoleBadge";
 
 interface Props {
   summaries: VolunteerSummary[];
@@ -101,14 +101,21 @@ export function VolunteerTable({ summaries, isAdmin = false }: Props) {
               <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 sm:table-cell">
                 Grade
               </th>
-              <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 md:table-cell">
+              <th className="hidden px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-500 md:table-cell">
                 Events
               </th>
-              <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Total Hours
+              <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500 sm:px-4">
+                {/* "Total Hours" is the widest heading in the table and on a
+                    phone it, not the data, is what forced the roster to scroll
+                    sideways. The data is identical either way. */}
+                <span className="sm:hidden">Hours</span>
+                <span className="hidden sm:inline">Total Hours</span>
               </th>
+              {/* Hidden on phones, where it is almost always an em dash and the
+                  width is better spent on the name. A volunteer's strike count
+                  is still one tap away in the expanded row. */}
               <th
-                className="px-2 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-500"
+                className="hidden px-2 py-3 text-center text-xs font-semibold uppercase tracking-wider text-slate-500 sm:table-cell"
                 title="Conduct strikes across every event"
               >
                 Strikes
@@ -116,7 +123,7 @@ export function VolunteerTable({ summaries, isAdmin = false }: Props) {
               <th className="hidden px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-slate-500 sm:table-cell">
                 Certificate
               </th>
-              <th className="w-12" />
+              <th className="w-8 text-right sm:w-12" />
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
@@ -190,13 +197,22 @@ function FragmentRow({
           isOpen ? "bg-brand-50/30" : ""
         }`}
       >
-        <td className="whitespace-nowrap px-4 py-3 sm:px-5">
+        {/* Deliberately NOT `whitespace-nowrap`: the name itself never wraps,
+            but the badges must be free to drop onto a second line in a narrow
+            column. Forcing the whole cell nowrap would widen the table until
+            the roster scrolls sideways on a phone. */}
+        <td className="px-4 py-3 sm:px-5">
           <div className="flex items-center gap-3">
             <Avatar name={v.name} />
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="font-medium text-slate-900">{v.name}</span>
-                <RoleBadge role={v.role} size="sm" />
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                {/* A long name may wrap on a phone (the last thing holding the
+                    roster wider than the screen); from sm up there is room to
+                    keep every name on one line. */}
+                <span className="font-medium text-slate-900 sm:whitespace-nowrap">
+                  {v.name}
+                </span>
+                <VolunteerBadges name={v.name} role={v.role} size="sm" />
               </div>
               {/* On mobile, surface grade here since its column is hidden. */}
               <div className="text-xs text-slate-500 sm:hidden">
@@ -208,12 +224,12 @@ function FragmentRow({
         <td className="hidden whitespace-nowrap px-4 py-3 text-sm text-slate-600 sm:table-cell">
           {v.latestGrade}
         </td>
-        <td className="hidden whitespace-nowrap px-4 py-3 text-sm text-slate-600 md:table-cell">
+        <td className="hidden whitespace-nowrap px-4 py-3 text-center text-sm tabular-nums text-slate-600 md:table-cell">
           {v.submissions.length}
         </td>
-        <td className="whitespace-nowrap px-4 py-3 text-right">
+        <td className="whitespace-nowrap px-3 py-3 text-right sm:px-4">
           <span
-            className={`badge ${
+            className={`badge tabular-nums ${
               hasHours
                 ? "bg-brand-100 text-brand-800"
                 : "bg-slate-100 text-slate-500"
@@ -222,7 +238,7 @@ function FragmentRow({
             {formatHours(v.totalHours)} hrs
           </span>
         </td>
-        <td className="whitespace-nowrap px-2 py-3 text-center">
+        <td className="hidden whitespace-nowrap px-2 py-3 text-center sm:table-cell">
           <StrikeCount count={v.totalStrikes} threshold={STRIKE_WATCHLIST_THRESHOLD} />
         </td>
         <td
@@ -242,7 +258,7 @@ function FragmentRow({
             }
           />
         </td>
-        <td className="px-4 py-3 text-right text-slate-400">
+        <td className="px-2 py-3 text-right text-slate-400 sm:px-4">
           <svg
             viewBox="0 0 24 24"
             fill="none"
@@ -366,7 +382,7 @@ function EventRow({
           </td>
         </>
       )}
-      <td className="whitespace-nowrap px-4 py-2 text-right font-medium text-brand-700">
+      <td className="whitespace-nowrap px-4 py-2 text-right font-medium tabular-nums text-brand-700">
         {row.hours === null ? (
           <span className="text-xs font-normal text-slate-400">not counted</span>
         ) : (

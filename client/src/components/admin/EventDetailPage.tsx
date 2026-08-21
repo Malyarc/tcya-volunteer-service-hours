@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import type { AttendanceEntry, Volunteer, VolunteerEvent } from "../../types";
 import { formatDisplayId } from "../../qr";
+import type { DerivedHours } from "../../utils";
 import {
+  deriveHours,
   formatClockFromIso,
   formatDateLong,
   formatHours,
@@ -20,13 +22,19 @@ import {
   updateEvent,
 } from "../../api";
 import { ScannerModal } from "./ScannerModal";
-import { RoleBadge } from "../RoleBadge";
+import { VolunteerBadges } from "../RoleBadge";
 import {
   EventScheduleFields,
   ExpectedHoursHint,
   expectedHoursToInput,
   parseExpectedHoursInput,
 } from "./eventFields";
+
+// Columns in the attendance table: Volunteer, Check-in, Check-out, Hours,
+// Strike — plus a row-actions column for admins. Every colSpan on the page is
+// derived from this ONE function, so adding a column can never leave an
+// empty-state or an expanded editor spanning the wrong width.
+const COLUMN_COUNT = (readOnly: boolean) => (readOnly ? 5 : 6);
 
 interface Props {
   event: VolunteerEvent;
@@ -184,6 +192,10 @@ export function EventDetailPage({
       setError(null);
       const updated = await patchAttendee(event.id, volunteerName, patch);
       onEventUpdated(updated);
+      // Setting times by hand is what CREATES credited hours, so pull the
+      // derived submissions too — otherwise the roster still shows the old
+      // total until the admin navigates away.
+      onHoursChanged();
       setEditingRow(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save times.");
@@ -377,7 +389,7 @@ export function EventDetailPage({
 
       <div
         className={`grid grid-cols-1 gap-6 ${
-          readOnly ? "" : "lg:grid-cols-[1fr_1.6fr]"
+          readOnly ? "" : "lg:grid-cols-[minmax(0,1fr)_minmax(0,2.1fr)]"
         }`}
       >
         {/* Volunteer picker — admins only: adding someone to an event is an
@@ -489,8 +501,14 @@ export function EventDetailPage({
               <thead className="bg-slate-50/70">
                 <tr>
                   <th className="px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Volunteer</th>
-                  <th className="px-4 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Check-in</th>
-                  <th className="px-4 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Check-out</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Check-in</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">Check-out</th>
+                  <th
+                    className="whitespace-nowrap px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wider text-slate-500"
+                    title="Credited service hours, calculated from the two times (check-out − check-in)"
+                  >
+                    Hours
+                  </th>
                   <th
                     className="px-2 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500"
                     title={
@@ -507,7 +525,7 @@ export function EventDetailPage({
               <tbody className="divide-y divide-slate-100 bg-white">
                 {attendees.length === 0 && (
                   <tr>
-                    <td colSpan={readOnly ? 4 : 5} className="px-4 py-10 text-center text-sm text-slate-500">
+                    <td colSpan={COLUMN_COUNT(readOnly)} className="px-4 py-10 text-center text-sm text-slate-500">
                       {readOnly
                         ? "No one on the list yet. Scan a volunteer's QR code to check them in."
                         : "No one on the list yet. Add volunteers from the left, or scan their QR codes to check them in."}
@@ -519,6 +537,7 @@ export function EventDetailPage({
                   <AttendanceRow
                     key={a.volunteerName}
                     entry={a}
+                    expectedHours={event.expectedHours}
                     readOnly={readOnly}
                     canStrike={canRecordStrikes}
                     busy={busy || pendingRows.has(a.volunteerName)}
@@ -551,6 +570,7 @@ export function EventDetailPage({
 
 function AttendanceRow({
   entry,
+  expectedHours,
   readOnly,
   canStrike,
   busy,
@@ -563,6 +583,8 @@ function AttendanceRow({
   onSaveTimes,
 }: {
   entry: AttendanceEntry;
+  // The event's cap, needed to show what these times are actually WORTH.
+  expectedHours: number | null;
   readOnly: boolean;
   canStrike: boolean;
   busy: boolean;
@@ -589,6 +611,26 @@ function AttendanceRow({
   const [seedIn, setSeedIn] = useState("");
   const [seedOut, setSeedOut] = useState("");
   const [timeError, setTimeError] = useState<string | null>(null);
+
+  // What the SAVED times are worth — shown in the Hours column.
+  const saved = deriveHours(
+    entry.checkinAt,
+    entry.checkoutAt,
+    expectedHours,
+    entry.role
+  );
+
+  // What the times CURRENTLY IN THE EDITOR are worth. This is the auto-fill:
+  // the admin types a check-in and a check-out and the hours appear, computed
+  // by the same rule the server will apply on save, so the number they approve
+  // is the number that gets credited. Recomputed on every keystroke, which is
+  // why it is a plain derivation and not state that could fall out of sync.
+  const draft = deriveHours(
+    localInputToIso(inVal),
+    localInputToIso(outVal),
+    expectedHours,
+    entry.role
+  );
 
   function startEdit() {
     const si = isoToLocalInput(entry.checkinAt);
@@ -618,15 +660,17 @@ function AttendanceRow({
     <>
       <tr className="hover:bg-slate-50/60">
         <td className="px-4 py-2.5">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="font-medium text-slate-900">{entry.volunteerName}</span>
-            <RoleBadge role={entry.role} size="sm" />
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+            <span className="whitespace-nowrap font-medium text-slate-900">
+              {entry.volunteerName}
+            </span>
+            <VolunteerBadges name={entry.volunteerName} role={entry.role} size="sm" />
           </div>
           {entry.code && (
             <div className="text-[11px] font-medium text-slate-500">{formatDisplayId(entry.code)}</div>
           )}
         </td>
-        <td className="px-4 py-2.5 text-center">
+        <td className="px-3 py-2.5 text-center">
           <CheckToggle
             checked={entry.staffCheckin}
             readOnly={readOnly}
@@ -642,7 +686,7 @@ function AttendanceRow({
             <div className="mt-1 text-[11px] text-slate-500">{formatClockFromIso(entry.checkinAt)}</div>
           )}
         </td>
-        <td className="px-4 py-2.5 text-center">
+        <td className="px-3 py-2.5 text-center">
           <CheckToggle
             checked={entry.volunteerCheckout}
             readOnly={readOnly}
@@ -657,6 +701,9 @@ function AttendanceRow({
           {entry.checkoutAt && (
             <div className="mt-1 text-[11px] text-slate-500">{formatClockFromIso(entry.checkoutAt)}</div>
           )}
+        </td>
+        <td className="px-3 py-2.5 text-right">
+          <HoursCell derived={saved} />
         </td>
         <td className="px-2 py-2.5 text-center">
           <StrikeToggle
@@ -699,7 +746,7 @@ function AttendanceRow({
       </tr>
       {editing && !readOnly && (
         <tr className="bg-slate-50/70">
-          <td colSpan={5} className="px-4 py-3">
+          <td colSpan={COLUMN_COUNT(readOnly)} className="px-4 py-3">
             <div className="flex flex-wrap items-end gap-3">
               <div>
                 <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
@@ -723,6 +770,35 @@ function AttendanceRow({
                   onChange={(e) => setOutVal(e.target.value)}
                 />
               </div>
+              {/* Auto-calculated. Read-only on purpose: hours are DERIVED from
+                  the two times, so an editable box here would invite a number
+                  the server would immediately overwrite. */}
+              <div>
+                <label
+                  htmlFor={`hours-${entry.volunteerName}`}
+                  className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-slate-500"
+                >
+                  Hours (auto)
+                </label>
+                <output
+                  id={`hours-${entry.volunteerName}`}
+                  aria-live="polite"
+                  className={`flex h-[38px] min-w-[7rem] items-center justify-end rounded-lg border px-3 text-sm font-semibold tabular-nums ${
+                    draft.complete
+                      ? "border-brand-200 bg-brand-50 text-brand-800"
+                      : "border-slate-200 bg-slate-50 text-slate-400"
+                  }`}
+                  title={
+                    draft.complete
+                      ? draft.capped
+                        ? `${formatHours(draft.raw)} hrs on site, capped at this event's expected ${formatHours(draft.credited)} hrs`
+                        : "Calculated from check-out − check-in"
+                      : "Set both times to calculate the hours"
+                  }
+                >
+                  {draft.complete ? `${formatHours(draft.credited)} hrs` : "—"}
+                </output>
+              </div>
               <div className="flex items-center gap-2">
                 <button onClick={saveTimes} className="btn-primary py-1.5 text-sm" disabled={busy}>
                   Save times
@@ -736,6 +812,25 @@ function AttendanceRow({
               <p className="mt-2 text-[11px] font-medium text-red-600">{timeError}</p>
             )}
             <p className="mt-2 text-[11px] text-slate-500">
+              {draft.complete ? (
+                <>
+                  <strong className="font-semibold text-slate-700">
+                    {formatHours(draft.credited)} hrs
+                  </strong>{" "}
+                  will be credited to {entry.volunteerName} when you save
+                  {draft.capped && (
+                    <>
+                      {" "}
+                      — {formatHours(draft.raw)} hrs on site, capped at this
+                      event's expected hours
+                      {entry.role === "officer" ? "" : " for ordinary volunteers"}
+                    </>
+                  )}
+                  .{" "}
+                </>
+              ) : (
+                <>Set both times and the hours are calculated for you. </>
+              )}
               Setting a time marks that side checked; hours = check-out − check-in.
               Clear a field to remove its time.
             </p>
@@ -743,6 +838,34 @@ function AttendanceRow({
         </tr>
       )}
     </>
+  );
+}
+
+// The Hours column. Quiet when there is nothing to credit yet (a volunteer who
+// has checked in but not out is the NORMAL mid-event state, not an error), and
+// a brand-blue figure once the row is complete. When the cap bites, the "capped"
+// tag explains the difference — the same treatment the roster uses, so the two
+// pages never seem to disagree about a number.
+function HoursCell({ derived }: { derived: DerivedHours }) {
+  if (!derived.complete) {
+    return (
+      <span className="text-xs text-slate-300" title="Both times are needed before hours are credited">
+        —
+      </span>
+    );
+  }
+  return (
+    <span className="whitespace-nowrap font-semibold tabular-nums text-brand-700">
+      {formatHours(derived.credited)}
+      {derived.capped && (
+        <span
+          className="ml-1 align-middle text-[10px] font-semibold uppercase tracking-wide text-amber-600"
+          title={`Capped at the event's expected hours (${formatHours(derived.raw)} hrs on site)`}
+        >
+          capped
+        </span>
+      )}
+    </span>
   );
 }
 
