@@ -82,7 +82,13 @@ Postgres** database.
 
 1d. **Strikes never touch hours.** `attendance.strikes` is a separate axis, a
    human judgement call. It is read from attendance (not submissions) so a
-   strike stays visible even when the attendance row is incomplete.
+   strike stays visible even when the attendance row is incomplete. Recorded by
+   admins AND by officers (the door staff witness the conduct) through the one
+   narrow route `PATCH /events/:id/attendance/strikes`, which can write nothing
+   but `strikes` — that structural narrowness IS the officer boundary, so never
+   widen it to accept another field. `parseStrikes` rejects rather than coerces:
+   bare `Number()` maps `null`/`false`/`""`/`[]` to 0 (silently CLEARING a
+   conduct record) and `true` to 1.
 
 2. **Deleting an event (or removing a volunteer from one) deletes the derived
    submissions** so no orphaned "pending" rows linger in the roster.
@@ -100,24 +106,34 @@ Postgres** database.
    (`qr.ts`) encodes only `{t,v,id,code,name}` — never email/phone/custom fields.
 6. **Volunteer codes come from a Postgres sequence** (`volunteer_code_seq`); seeding
    runs once, guarded by a transaction-scoped advisory lock.
-7. **There are TWO accounts, and the officer one is scanner-only.**
+7. **There are TWO accounts, and the officer one is door-duty-only.**
    `server/src/accounts.js` holds both passcodes (admin `0314`, officer `1013`) —
    deploy configuration no longer supplies them, and a stale `ADMIN_PASSWORD` in
    an environment is deliberately ignored, so every deployment signs in the same
    way. `/login` returns `{token, role}`; the two tokens are HMACs with distinct
    derivation prefixes and can never collide.
    - `requireAdmin` guards everything; `requireScanner` (admin OR officer) guards
-     ONLY `POST /events/:id/checkin|checkout`. An officer hitting an admin route
+     ONLY the three door-duty routes: `POST /events/:id/checkin|checkout` and
+     `PATCH /events/:id/attendance/strikes`. Each is deliberately narrow — the
+     scan writes a timestamp, the strike writes one integer — so the officer
+     boundary is structural rather than a per-field allowlist. The general
+     `PATCH /events/:id/attendance` stays admin-only and still accepts `strikes`
+     for admins; do NOT relax it to serve officers, or a forged `checkinAt`
+     rides in beside the strike. An officer hitting an admin route
      gets **403**, never 401 — the client clears its token on a 401, and signing
      an officer out mid-event over a blocked action would be worse than the
      action it blocked.
    - Officers never receive QR codes, volunteer ids or contact details:
      `officerEvent` / `officerAttendance` / `officerVolunteer` project every
-     response they can reach. They see check-in/out TIMES (they run the door).
-   - The UI mirrors this (read-only event page, camera-only scanner, no
-     Volunteers tab) but is not the enforcement — the server is. Any new
-     mutating route must be added under `requireAdmin`, and the shared suite's
-     "an officer CANNOT …" tests are where that gets proved.
+     response they can reach — including the event a strike returns. They see
+     check-in/out TIMES (they run the door).
+   - The UI mirrors this (event page with only the Strike column live,
+     camera-only scanner, no Volunteers tab) but is not the enforcement — the
+     server is. `EventDetailPage` keeps `readOnly` (no admin editing) separate
+     from `canRecordStrikes` for exactly that reason. Any new mutating route
+     must be added under `requireAdmin` unless door staff genuinely need it, and
+     the shared suite's "an officer CAN/CANNOT …" tests are where that gets
+     proved.
    - `adminEnabled: false` remains as a kill switch: nobody can sign in and every
      privileged route returns 503, while public reads keep working.
 

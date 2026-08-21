@@ -16,6 +16,7 @@ import {
   deleteEvent,
   patchAttendee,
   removeAttendee,
+  setAttendanceStrikes,
   updateEvent,
 } from "../../api";
 import { ScannerModal } from "./ScannerModal";
@@ -32,9 +33,15 @@ interface Props {
   rosterNames: string[];
   volunteers: Volunteer[];
   // Officer mode. An officer opens an event to run the door: they may scan
-  // volunteers in and out and nothing else, so every editing control is absent
-  // (the server rejects the same actions — this keeps the page honest).
+  // volunteers in and out and flag conduct, and nothing else — so every other
+  // editing control is absent (the server rejects the same actions; this keeps
+  // the page honest).
   readOnly?: boolean;
+  // Whether this account may record conduct strikes. Deliberately its OWN flag
+  // rather than `!readOnly`: strikes are the one judgement call an officer
+  // makes at the door, so the Strike column stays live in officer mode while
+  // the times, the roster and the event itself do not.
+  canRecordStrikes?: boolean;
   onBack: () => void;
   onEventUpdated: (next: VolunteerEvent) => void;
   // Called when a change may have altered credited hours (a schedule edit
@@ -48,6 +55,7 @@ export function EventDetailPage({
   rosterNames,
   volunteers,
   readOnly = false,
+  canRecordStrikes = !readOnly,
   onBack,
   onEventUpdated,
   onHoursChanged,
@@ -184,9 +192,11 @@ export function EventDetailPage({
     }
   }
 
-  // A strike is a human judgement call an admin records against one volunteer at
-  // one event. It never affects hours — it is deliberately a separate axis.
+  // A strike is a human judgement call recorded against one volunteer at one
+  // event, by whoever is running it — an admin or the officer at the door. It
+  // never affects hours: it is deliberately a separate axis.
   async function handleToggleStrike(volunteerName: string, current: number) {
+    if (!canRecordStrikes) return;
     const next = current > 0 ? 0 : 1;
     if (
       next === 0 &&
@@ -200,7 +210,7 @@ export function EventDetailPage({
     try {
       setRowPending(volunteerName, true);
       setError(null);
-      onEventUpdated(await patchAttendee(event.id, volunteerName, { strikes: next }));
+      onEventUpdated(await setAttendanceStrikes(event.id, volunteerName, next));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update the strike.");
     } finally {
@@ -345,7 +355,7 @@ export function EventDetailPage({
           <em>service hours</em> are credited automatically from their check-in and
           check-out times (hours = check-out − check-in).{" "}
           {readOnly
-            ? "Scan a volunteer's QR to stamp those times. Corrections are an admin's job."
+            ? "Scan a volunteer's QR to stamp those times, and tap the Strike column to flag a conduct issue. Correcting a time is an admin's job."
             : "Scan their QR or set the times by hand below."}
           {event.expectedHours !== null && (
             <>
@@ -459,7 +469,7 @@ export function EventDetailPage({
               </h2>
               <p className="text-xs text-slate-500">
                 {readOnly
-                  ? "Live view of who has been scanned in and out. Both times set ⇒ hours are credited (check-out − check-in)."
+                  ? "Live view of who has been scanned in and out, and where you flag a conduct strike. Both times set ⇒ hours are credited (check-out − check-in)."
                   : "Tap a check to stamp / clear that time, or edit the times directly. Both times set ⇒ hours are credited (check-out − check-in)."}
               </p>
             </div>
@@ -484,9 +494,9 @@ export function EventDetailPage({
                   <th
                     className="px-2 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-slate-500"
                     title={
-                      readOnly
-                        ? "Conduct strikes recorded by an admin"
-                        : "Tap to flag a conduct issue for this volunteer at this event"
+                      canRecordStrikes
+                        ? "Tap to flag a conduct issue for this volunteer at this event"
+                        : "Conduct strikes recorded at this event"
                     }
                   >
                     Strike
@@ -510,6 +520,7 @@ export function EventDetailPage({
                     key={a.volunteerName}
                     entry={a}
                     readOnly={readOnly}
+                    canStrike={canRecordStrikes}
                     busy={busy || pendingRows.has(a.volunteerName)}
                     editing={editingRow === a.volunteerName}
                     onToggle={handleToggleCheck}
@@ -541,6 +552,7 @@ export function EventDetailPage({
 function AttendanceRow({
   entry,
   readOnly,
+  canStrike,
   busy,
   editing,
   onToggle,
@@ -552,6 +564,7 @@ function AttendanceRow({
 }: {
   entry: AttendanceEntry;
   readOnly: boolean;
+  canStrike: boolean;
   busy: boolean;
   editing: boolean;
   onToggle: (
@@ -648,7 +661,7 @@ function AttendanceRow({
         <td className="px-2 py-2.5 text-center">
           <StrikeToggle
             strikes={entry.strikes || 0}
-            readOnly={readOnly}
+            interactive={canStrike}
             disabled={busy}
             volunteerName={entry.volunteerName}
             onClick={() => onToggleStrike(entry.volunteerName, entry.strikes || 0)}
@@ -786,51 +799,53 @@ function CheckToggle({
 }
 
 // White = clean, red = struck. One tap toggles; the count shows when an import
-// or a previous admin recorded more than one strike for the same event.
+// or a previous strike-recorder logged more than one for the same event.
 function StrikeToggle({
   strikes,
-  readOnly,
+  interactive,
   disabled,
   volunteerName,
   onClick,
 }: {
   strikes: number;
-  readOnly: boolean;
+  interactive: boolean;
   disabled: boolean;
   volunteerName: string;
   onClick: () => void;
 }) {
   const struck = strikes > 0;
-  // Recording a strike is a judgement call reserved for admins, so officers see
-  // the state and cannot change it.
-  const Tag = readOnly ? "span" : "button";
+  // Admins AND officers record strikes — the person running the door is the one
+  // who sees the conduct. When the account may not (a signed-out reader), this
+  // renders a real <span>, not a disabled button: that is what tells a screen
+  // reader, and a thumb, that there is nothing to press.
+  const Tag = interactive ? "button" : "span";
   return (
     <Tag
-      {...(readOnly
-        ? { role: "img" }
-        : { type: "button" as const, onClick, disabled, "aria-pressed": struck })}
+      {...(interactive
+        ? { type: "button" as const, onClick, disabled, "aria-pressed": struck }
+        : { role: "img" })}
       aria-label={
-        readOnly
+        interactive
           ? struck
-            ? `${volunteerName} has ${strikes} strike${strikes === 1 ? "" : "s"} for this event`
-            : `${volunteerName} has no strikes for this event`
-          : struck
             ? `Clear the strike for ${volunteerName}`
             : `Add a strike for ${volunteerName}`
+          : struck
+            ? `${volunteerName} has ${strikes} strike${strikes === 1 ? "" : "s"} for this event`
+            : `${volunteerName} has no strikes for this event`
       }
       title={
-        readOnly
+        interactive
           ? struck
-            ? `${strikes} strike${strikes === 1 ? "" : "s"}`
-            : "No strike"
-          : struck
             ? `${strikes} strike${strikes === 1 ? "" : "s"} — tap to clear`
             : "No strike — tap to add one"
+          : struck
+            ? `${strikes} strike${strikes === 1 ? "" : "s"}`
+            : "No strike"
       }
       className={`inline-flex h-9 w-9 items-center justify-center rounded-full border text-sm font-bold transition focus:outline-none focus:ring-2 focus:ring-offset-2 ${
         struck
-          ? `border-transparent bg-red-500 text-white shadow focus:ring-red-500 ${readOnly ? "" : "hover:bg-red-600"}`
-          : `border-slate-300 bg-white text-slate-300 ${readOnly ? "" : "hover:border-red-300 hover:text-red-400"} focus:ring-slate-400`
+          ? `border-transparent bg-red-500 text-white shadow focus:ring-red-500 ${interactive ? "hover:bg-red-600" : ""}`
+          : `border-slate-300 bg-white text-slate-300 ${interactive ? "hover:border-red-300 hover:text-red-400" : ""} focus:ring-slate-400`
       } disabled:cursor-not-allowed disabled:opacity-60`}
     >
       {strikes > 1 ? (

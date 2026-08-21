@@ -113,7 +113,7 @@ leftover value in a site's environment is deliberately ignored.
 | Account | Passcode | What it can do |
 |---|---|---|
 | **Admin** | `0314` | Everything: create/edit/delete events, manage the roster, correct check-in/out times, record strikes, reorder the events page, export/import. |
-| **Officer** | `1013` | Open an event an admin already created and check volunteers in / out **by scanning their QR**. Nothing else — no edits, no manual times, no strikes, no roster access. |
+| **Officer** | `1013` | Open an event an admin already created and, on that event only, check volunteers in / out **by scanning their QR** and **record conduct strikes**. Nothing else — no edits, no manual times, no roster access. |
 
 Both are enforced server-side, not just hidden in the UI: an officer token gets
 a `403` from every admin route (never a `401`, so an officer is not signed out

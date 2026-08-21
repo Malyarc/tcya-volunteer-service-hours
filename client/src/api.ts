@@ -205,6 +205,11 @@ export async function addAttendees(
   return handle<VolunteerEvent>(res);
 }
 
+// Admin-only: the check marks and the hand-set times. Strikes are NOT here —
+// they go through setAttendanceStrikes below, the one strike path both roles
+// can use. (The server still accepts `strikes` on this route for admins; the
+// client deliberately doesn't, so a strike never takes the branch an officer
+// would get a 403 from.)
 export async function patchAttendee(
   eventId: string,
   volunteerName: string,
@@ -213,13 +218,32 @@ export async function patchAttendee(
     volunteerCheckout?: boolean;
     checkinAt?: string | null;
     checkoutAt?: string | null;
-    strikes?: number;
   }
 ): Promise<VolunteerEvent> {
   const res = await fetch(`${API_BASE}/events/${eventId}/attendance`, {
     method: "PATCH",
     headers: headers(true),
     body: JSON.stringify({ volunteerName, ...patch }),
+  });
+  return handle<VolunteerEvent>(res);
+}
+
+// Record (or clear) a conduct strike for one volunteer at one event.
+//
+// Its own endpoint, and the one BOTH roles use: officers may record strikes
+// (they run the door and see the conduct) but nothing else on an attendance
+// row, and the server enforces that by only exposing this narrow route to
+// them. Routing admins through the same call means the officer path is the one
+// exercised on every strike, not a rarely-trodden branch.
+export async function setAttendanceStrikes(
+  eventId: string,
+  volunteerName: string,
+  strikes: number
+): Promise<VolunteerEvent> {
+  const res = await fetch(`${API_BASE}/events/${eventId}/attendance/strikes`, {
+    method: "PATCH",
+    headers: headers(true),
+    body: JSON.stringify({ volunteerName, strikes }),
   });
   return handle<VolunteerEvent>(res);
 }

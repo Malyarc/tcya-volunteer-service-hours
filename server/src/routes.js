@@ -46,8 +46,17 @@ function parseExpectedHours(v) {
   return n;
 }
 
+// A strike count off the wire: a real number, or a numeric string. Everything
+// else is rejected rather than coerced. Bare `Number()` would take null, false,
+// "" and [] to 0 (silently CLEARING a recorded strike) and true to 1 (inventing
+// one) — precisely the silent write both strike routes promise never to make.
 function parseStrikes(v) {
-  const n = typeof v === "number" ? v : Number(v);
+  const n =
+    typeof v === "number"
+      ? v
+      : typeof v === "string" && v.trim() !== ""
+        ? Number(v)
+        : NaN;
   if (!Number.isInteger(n) || n < 0 || n > MAX_STRIKES) return undefined;
   return n;
 }
@@ -220,15 +229,18 @@ export function createRouter({
     if (role === ACCOUNT_OFFICER) {
       return res.status(403).json({
         error:
-          "Officers can only check volunteers in and out by scanning their QR code. Ask an admin to make this change.",
+          "Officers can only scan volunteers in and out and record conduct strikes. Ask an admin to make this change.",
         code: "officer_forbidden",
       });
     }
     res.status(401).json({ error: "Admin authentication required" });
   }
 
-  // The QR scanner — the ONE privileged capability officers hold. Both roles
-  // pass; anonymous callers do not.
+  // Door duty — the privileged capabilities an officer holds: the QR scanner
+  // (check-in / check-out) and recording a conduct strike. Both roles pass;
+  // anonymous callers do not. Nothing else may ever be mounted here: every
+  // route under this guard must be one an officer running a door needs, and
+  // must be narrow enough that it cannot edit hours, times or the roster.
   function requireScanner(req, res, next) {
     if (!adminEnabled) return disabledResponse(res);
     if (accountRole(req)) return next();
@@ -690,7 +702,54 @@ export function createRouter({
     }
   });
 
-  // ---------- QR check-in / check-out (admin scanner) ----------
+  // Record (or clear) a conduct strike. This is the SECOND capability an
+  // officer holds, alongside the scanner: the student leader running the door
+  // is the person who actually witnesses the conduct, and making them track an
+  // admin down afterwards is how a strike got lost.
+  //
+  // It is deliberately its OWN route rather than a relaxation of the admin
+  // PATCH above. This handler can only ever write `strikes` — no times, no
+  // flags, no removal — so an officer's reach cannot silently widen the day
+  // someone adds a new field to the general attendance patch.
+  router.patch("/events/:id/attendance/strikes", requireScanner, async (req, res) => {
+    const body = req.body || {};
+    const { volunteerName } = body;
+    if (!volunteerName || typeof volunteerName !== "string") {
+      return res.status(400).json({ error: "volunteerName is required" });
+    }
+    // Rejected loudly when malformed, exactly like the admin route: a bad value
+    // must never silently clear a recorded strike.
+    const strikes = parseStrikes(body.strikes);
+    if (strikes === undefined) {
+      return res
+        .status(400)
+        .json({ error: `strikes must be a whole number between 0 and ${MAX_STRIKES}` });
+    }
+    try {
+      const event = await store.patchAttendance(req.params.id, volunteerName, {
+        strikes,
+      });
+      if (!event) {
+        // The store answers null both for "no such event" and for "that person
+        // isn't on this one" — say which. An officer staring at the event while
+        // being told "Event not found" would think it had been deleted.
+        const exists = await store.getEvent(req.params.id);
+        return res.status(404).json({
+          error: exists
+            ? "That volunteer is not on this event's attendance list."
+            : "Event not found",
+        });
+      }
+      // Officers read the event back through their own projection, so recording
+      // a strike can't hand back the QR codes GET /events withheld.
+      res.json(isAdminRequest(req) ? event : officerEvent(event));
+    } catch (err) {
+      console.error("Failed to update strikes", err);
+      res.status(500).json({ error: "Failed to update strikes" });
+    }
+  });
+
+  // ---------- QR check-in / check-out (admin + officer scanner) ----------
 
   async function handleScan(req, res, kind) {
     const code = trimStr((req.body || {}).code, 120);

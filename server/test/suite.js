@@ -1328,7 +1328,10 @@ export function runSuite(withServer, label) {
       );
       assert.equal(added.body.attendance[0].strikes, 0);
 
-      for (const bad of [-1, 1.5, "many", 1000]) {
+      // `null`, `false`, `""` and `[]` all coerce to 0 through bare Number(),
+      // and `true` to 1 — each one a SILENT write to a conduct record. They are
+      // rejected, not coerced.
+      for (const bad of [-1, 1.5, "many", 1000, null, true, false, "", [], {}]) {
         const r = await api.send(
           "PATCH",
           `/api/events/${event.id}/attendance`,
@@ -1417,6 +1420,191 @@ export function runSuite(withServer, label) {
     });
   });
 
+  // The officer's SECOND capability: conduct strikes. The student leader at the
+  // door is the person who witnesses the conduct, so they record it — but only
+  // through a route that can write nothing else.
+
+  test(name("an officer CAN record and clear a conduct strike"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth, { expectedHours: 4 });
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z");
+
+      const on = await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        { volunteerName: V1, strikes: 1 },
+        officer
+      );
+      assert.equal(on.status, 200, JSON.stringify(on.body));
+      assert.equal(on.body.attendance.find((a) => a.volunteerName === V1).strikes, 1);
+      // …and the officer reads the event back through their OWN projection, so
+      // recording a strike can't hand them the QR codes GET /events withheld.
+      assert.equal(on.body.attendance.find((a) => a.volunteerName === V1).code, undefined);
+      assert.equal(on.body.attendance.find((a) => a.volunteerName === V1).volunteerId, undefined);
+      assert.equal(JSON.stringify(on.body).includes("TCYA-0001"), false);
+
+      // The admin sees the strike the officer recorded, and NOTHING else moved:
+      // the hours are still the derived, capped 3 and both times are intact.
+      const row = (await api.get("/api/events", auth)).body[0].attendance.find(
+        (a) => a.volunteerName === V1
+      );
+      assert.equal(row.strikes, 1);
+      assert.equal(row.checkinAt, "2026-03-15T16:00:00.000Z");
+      assert.equal(row.checkoutAt, "2026-03-15T19:00:00.000Z");
+      assert.equal(
+        (await api.get("/api/submissions", auth)).body.find((s) => s.volunteerName === V1).hours,
+        3,
+        "an officer's strike does not change credited hours"
+      );
+
+      // Clearing is the same capability — an officer who mis-tapped can undo it.
+      const off = await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        { volunteerName: V1, strikes: 0 },
+        officer
+      );
+      assert.equal(off.status, 200);
+      assert.equal(off.body.attendance.find((a) => a.volunteerName === V1).strikes, 0);
+    });
+  });
+
+  test(name("the strike route can ONLY write strikes"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, V1);
+      // The officer scans V1 in, so the row exists with a real check-in time.
+      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+      const before = (await api.get("/api/events", auth)).body[0].attendance.find(
+        (a) => a.volunteerName === V1
+      );
+      assert.ok(before.checkinAt, "the scan stamped a check-in");
+
+      // Every other attendance field an attacker might smuggle in alongside the
+      // strike is simply not read by this handler.
+      const r = await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        {
+          volunteerName: V1,
+          strikes: 2,
+          checkinAt: "2020-01-01T00:00:00.000Z",
+          checkoutAt: "2026-03-15T23:00:00.000Z",
+          staffCheckin: false,
+          volunteerCheckout: true,
+        },
+        officer
+      );
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+
+      const after = (await api.get("/api/events", auth)).body[0].attendance.find(
+        (a) => a.volunteerName === V1
+      );
+      assert.equal(after.strikes, 2, "the strike landed");
+      assert.equal(after.checkinAt, before.checkinAt, "the check-in time was not forged");
+      assert.equal(after.staffCheckin, true, "…nor un-checked");
+      assert.equal(after.checkoutAt, null, "no check-out was forged");
+      assert.equal(after.volunteerCheckout, false);
+      assert.equal(
+        (await api.get("/api/submissions", auth)).body.length,
+        0,
+        "and no hours were conjured out of a strike"
+      );
+    });
+  });
+
+  test(name("the strike route validates its input and its target"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V1] }, auth);
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        { volunteerName: V1, strikes: 1 },
+        officer
+      );
+
+      // A malformed value is rejected loudly — never coerced, so it can never
+      // silently clear the strike that is already recorded.
+      for (const bad of [-1, 1.5, "many", 1000, null, undefined, true, false, "", []]) {
+        const r = await api.send(
+          "PATCH",
+          `/api/events/${event.id}/attendance/strikes`,
+          { volunteerName: V1, strikes: bad },
+          officer
+        );
+        assert.equal(r.status, 400, `should reject strikes=${JSON.stringify(bad)}`);
+      }
+      assert.equal(
+        (await api.send("PATCH", `/api/events/${event.id}/attendance/strikes`, { strikes: 1 }, officer))
+          .status,
+        400,
+        "volunteerName is required"
+      );
+      // A volunteer who is not on this event, and an event that does not exist,
+      // are told apart — "Event not found" while staring at the event would
+      // read as "it was deleted".
+      const notOnList = await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        { volunteerName: V2, strikes: 1 },
+        officer
+      );
+      assert.equal(notOnList.status, 404);
+      assert.match(notOnList.body.error, /not on this event/i);
+      assert.equal(
+        (await api.send(
+          "PATCH",
+          "/api/events/00000000-0000-4000-8000-000000000000/attendance/strikes",
+          { volunteerName: V1, strikes: 1 },
+          officer
+        )).status,
+        404
+      );
+      assert.equal(
+        (await api.send("PATCH", "/api/events/not-a-uuid/attendance/strikes", { volunteerName: V1, strikes: 1 }, officer))
+          .status,
+        404
+      );
+      // Anonymous callers get nowhere near it.
+      assert.equal(
+        (await api.send("PATCH", `/api/events/${event.id}/attendance/strikes`, { volunteerName: V1, strikes: 0 }))
+          .status,
+        401
+      );
+
+      // Through all of that, the recorded strike survived untouched.
+      const row = (await api.get("/api/events", auth)).body[0].attendance.find(
+        (a) => a.volunteerName === V1
+      );
+      assert.equal(row.strikes, 1);
+    });
+  });
+
+  test(name("an admin uses the same strike route, and sees the full event"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V1] }, auth);
+      const r = await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        { volunteerName: V1, strikes: 3 },
+        auth
+      );
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      const row = r.body.attendance.find((a) => a.volunteerName === V1);
+      assert.equal(row.strikes, 3);
+      assert.ok(row.code, "an admin still gets the unprojected event back");
+    });
+  });
+
   test(name("an officer CANNOT create, edit or delete events"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
@@ -1447,7 +1635,7 @@ export function runSuite(withServer, label) {
     });
   });
 
-  test(name("an officer CANNOT edit hours, times, strikes or the attendance list"), async () => {
+  test(name("an officer CANNOT edit hours, times or the attendance list"), async () => {
     await withServer(async (api) => {
       const auth = await adminToken(api);
       const officer = await officerToken(api);
@@ -1473,11 +1661,17 @@ export function runSuite(withServer, label) {
       );
       assert.equal(patch.status, 403);
       assert.equal(patch.body.code, "officer_forbidden");
-      // Strikes are a judgement call — admins only.
-      assert.equal(
-        (await api.send("PATCH", `/api/events/${event.id}/attendance`, { volunteerName: V1, strikes: 1 }, officer)).status,
-        403
+      // An officer DOES record strikes, but only through the narrow route built
+      // for it — the general attendance patch stays shut, so a payload that
+      // pairs a strike with a forged time can never get in through the side.
+      const smuggle = await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, strikes: 1, checkinAt: "2026-03-15T16:00:00.000Z" },
+        officer
       );
+      assert.equal(smuggle.status, 403);
+      assert.equal(smuggle.body.code, "officer_forbidden");
 
       const row = (await api.get("/api/events", auth)).body[0].attendance;
       assert.equal(row.length, 1, "the roster for this event is untouched");

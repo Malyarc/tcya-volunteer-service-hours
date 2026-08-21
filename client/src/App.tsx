@@ -310,6 +310,10 @@ export default function App() {
               rosterNames={rosterNames}
               volunteers={volunteers}
               readOnly={isOfficer}
+              // Officers record conduct strikes too: they run the door, so they
+              // are the ones who witness the conduct. Everything else on this
+              // page stays admin-only (see `readOnly`).
+              canRecordStrikes={isAdmin || isOfficer}
               onEventUpdated={(next) =>
                 setEvents((prev) =>
                   prev.map((e) => (e.id === next.id ? next : e))

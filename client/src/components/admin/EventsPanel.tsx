@@ -187,7 +187,7 @@ export function EventsPanel({
             </div>
             <p className="text-sm text-slate-500">
               {readOnly
-                ? "Open an event to scan volunteers in and out. Only an admin can change an event."
+                ? "Open an event to scan volunteers in and out and flag conduct strikes. Only an admin can change the event itself."
                 : "Each event type has its own section listing every date it ran. Edit a date, its times or its expected hours right here."}
             </p>
           </div>

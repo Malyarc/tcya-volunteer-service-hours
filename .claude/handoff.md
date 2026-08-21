@@ -1,8 +1,68 @@
 # Handoff — ELA TCYA Volunteer Service Hours
 
-Single source of truth for the project's current state. Last updated: 2026-08-17.
+Single source of truth for the project's current state. Last updated: 2026-08-20.
 
-## Round 8 (latest) — a separate Officer login, plus a reorderable Events page
+## Round 9 (latest) — officers can record conduct strikes
+
+The chapter's ask: the officer at the door is the person who actually sees the
+conduct, so make the strike theirs to record instead of something they have to
+report to an admin afterwards. Officers now hold exactly TWO capabilities —
+scan in/out, and strike — and nothing else moved.
+
+### The route
+
+`PATCH /events/:id/attendance/strikes` under `requireScanner` (admin OR officer).
+Body: `{ volunteerName, strikes }`. It is deliberately its OWN route rather than
+a relaxation of the admin `PATCH /events/:id/attendance`:
+
+- This handler **can only ever write `strikes`** — it never reads a time, a flag
+  or a name off the body. An officer's reach therefore cannot widen the day
+  someone adds a field to the general attendance patch. The suite proves it by
+  POSTing `checkinAt` / `checkoutAt` / `staffCheckin` / `volunteerCheckout`
+  alongside a strike and asserting every one of them was ignored.
+- The general attendance PATCH stays **admin-only** and still 403s an officer,
+  including a payload that pairs a legal strike with a forged `checkinAt`.
+- Officers read the event back through `officerEvent`, so a strike response
+  can't hand them the QR codes `GET /events` withheld.
+- 404s tell "no such event" apart from "that volunteer isn't on this one" — an
+  officer staring at the event while being told "Event not found" would read it
+  as deleted.
+- Admins use the SAME route (`setAttendanceStrikes` in `api.ts` is the only
+  strike path in the client), so the officer branch is exercised on every
+  strike rather than being a rarely-trodden one.
+
+### Bug found and fixed while doing it
+
+`parseStrikes` used bare `Number()`, so `strikes: null`, `false`, `""` or `[]`
+all coerced to 0 and **silently cleared a recorded strike** with a 200, and
+`true` invented one — directly contradicting the comment promising a malformed
+value is rejected loudly. It now accepts only a real number or a numeric string.
+Both strike routes share the helper; regression-tested on both stores.
+
+### UI
+
+`EventDetailPage` now keeps two separate flags: `readOnly` (officer — no event,
+roster or time editing) and `canRecordStrikes` (admin OR officer). The Strike
+column is a real `<button>` with `aria-pressed` for both roles; check-in and
+check-out stay non-interactive `<span role="img">` status lights for officers.
+The "clear N strikes?" confirm applies to officers too. Copy updated in four
+places (sign-in modal blurb, Events page officer subtitle, the event note, the
+attendance-list subtitle).
+
+### Verified
+
+Green bar with exit codes captured: server memory **107 pass**, **live-Postgres
+parity 188 pass** (local `postgres:17` + Neon-HTTP proxy), client **60 pass**,
+`tsc -b && vite build` clean. **Adversarially audited** — five mutations
+(officer locked out of the route, route also writing `checkinAt`, `parseStrikes`
+reverted to bare `Number()`, officer response left unprojected, general PATCH
+opened to officers) each caught by the suite. Run live as an officer at 1280 px
+and at 375 px mobile: strike recorded (`PATCH …/strikes → 200`, response carries
+no `code`/`volunteerId`), persisted across reload, cleared by tap, multi-strike
+confirm shown and honored on cancel, hours and times untouched, no console
+errors, no page overflow at 150 % root text.
+
+## Round 8 — a separate Officer login, plus a reorderable Events page
 
 Three chapter-requested changes, one commit. Green bar: server memory **103
 pass**, **live-Postgres parity 180 pass**, client **60 pass**, build clean —

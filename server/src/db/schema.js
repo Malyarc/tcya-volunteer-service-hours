@@ -72,8 +72,9 @@ export const SCHEMA_STATEMENTS = [
   // insertion order) even when many rows share the same created_at from a
   // batch insert. ADD COLUMN keeps existing databases in sync.
   `ALTER TABLE attendance ADD COLUMN IF NOT EXISTS seq bigserial`,
-  // Conduct strikes an admin recorded against this volunteer AT THIS EVENT.
-  // 0 = clean. Purely a human judgement call; it never affects hours.
+  // Conduct strikes recorded against this volunteer AT THIS EVENT, by an admin
+  // or by the officer running the door. 0 = clean. Purely a human judgement
+  // call; it never affects hours.
   `ALTER TABLE attendance ADD COLUMN IF NOT EXISTS strikes integer NOT NULL DEFAULT 0`,
 
   `CREATE TABLE IF NOT EXISTS submissions (

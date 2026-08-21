@@ -5,12 +5,16 @@
 //               by hand, record conduct strikes, export/import, reorder the
 //               events page.
 //
-//   "officer" — a student leader running the door at an event. Can ONLY open an
-//               event an admin already created and check volunteers in / out by
-//               scanning their QR ID card. Officers cannot create or edit
-//               events, cannot add or remove volunteers, cannot touch anyone's
-//               hours or times by hand, and cannot record strikes. Their whole
-//               capability is "stamp now() on a scanned volunteer's row".
+//   "officer" — a student leader running the door at an event. Can open an
+//               event an admin already created and do exactly two things there:
+//               check volunteers in / out by scanning their QR ID card, and
+//               record a conduct strike (they are the ones who witness the
+//               conduct, so making them find an admin afterwards lost the
+//               record). Officers cannot create or edit events, cannot add or
+//               remove volunteers, and cannot touch anyone's hours or times by
+//               hand — and a strike never touches hours either, so neither of
+//               their capabilities can change what anybody is credited beyond
+//               the times they actually scanned.
 //
 // Note this is the LOGIN role, which is a different axis from a volunteer's
 // role on the roster (`roles.js`, volunteer | officer, which governs the hours
