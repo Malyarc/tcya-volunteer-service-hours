@@ -15,7 +15,23 @@ import type { AuditEntry } from "./types";
 // instants and MUST read as the clock the chapter saw, whatever timezone the
 // admin is in. Every expected value below is hand-computed from the UTC instant
 // and the Pacific offset in force on that date (PDT = UTC-7, PST = UTC-8).
+//
+// `npm test` pins TZ=UTC for exactly this reason. These assertions only PROVE
+// anything when the machine running them is NOT in Pacific time: on a Pacific
+// machine, code that forgot to pass an explicit timeZone produces identical
+// output and the tests pass while the feature is broken for everyone else.
+// (Confirmed by mutation: deleting `timeZone: CHAPTER_TZ` was caught only once
+// the suite stopped running in the chapter's own timezone.)
 // ---------------------------------------------------------------------------
+
+it("proves the zone is explicit, not inherited from the machine", () => {
+  // The suite runs in UTC, where this instant is the 21st at 16:00 — Pacific
+  // makes it the 21st at 09:00. If either helper stopped passing an explicit
+  // timeZone, one of these would take the machine's answer instead.
+  expect(new Date("2026-08-21T16:00:00.000Z").toISOString()).toContain("T16:00");
+  expect(formatPacificTime("2026-08-21T16:00:00.000Z")).toBe("9:00 AM");
+  expect(pacificDayKey("2026-08-21T02:30:00.000Z")).toBe("2026-08-20");
+});
 
 describe("Pacific time rendering", () => {
   it("renders an instant as the chapter's wall clock, not the viewer's", () => {
@@ -103,17 +119,20 @@ describe("describeEntry", () => {
       entry({ action: "checkin", details: { side: "checkin", method: "scan", to: "2026-08-21T16:00:00.000Z" } })
     );
     expect(d.family).toBe("checkin");
+    expect(d.label).toBe("Checked in");
     expect(d.verb).toBe("checked in");
     expect(d.method).toBe("QR scan");
-    expect(d.detail).toBe("Check-in set to 9:00 AM");
+    // The chip already names the side, so the detail carries only the value.
+    expect(d.detail).toBe("Set to 9:00 AM");
   });
 
   it("distinguishes a hand-set time from a scanned one", () => {
     const d = describeEntry(
       entry({ action: "checkout", details: { side: "checkout", method: "manual", to: "2026-08-21T21:00:00.000Z" } })
     );
+    expect(d.label).toBe("Checked out");
     expect(d.method).toBe("by hand");
-    expect(d.detail).toBe("Check-out set to 2:00 PM");
+    expect(d.detail).toBe("Set to 2:00 PM");
   });
 
   it("shows both sides of a correction", () => {
@@ -170,6 +189,26 @@ describe("describeEntry", () => {
   it("never renders a contact value, only that one changed", () => {
     const d = describeEntry(entry({ action: "volunteer_updated", details: { email: "changed" } }));
     expect(d.detail).toBe("email changed");
+  });
+
+  it("gives every action a chip label", () => {
+    const actions: AuditEntry["action"][] = [
+      "checkin", "checkout", "checkin_cleared", "checkout_cleared", "time_corrected",
+      "strike_set", "attendee_added", "attendee_removed",
+      "volunteer_created", "volunteer_updated", "volunteer_deleted",
+    ];
+    for (const action of actions) {
+      const d = describeEntry(entry({ action, details: {} }));
+      expect(d.label, `${action} needs a chip label`).toBeTruthy();
+      expect(d.label.length, `${action}'s label must stay chip-sized`).toBeLessThan(22);
+    }
+  });
+
+  it("labels a strike being cleared differently from one being given", () => {
+    expect(describeEntry(entry({ action: "strike_set", details: { from: 0, to: 1 } })).label)
+      .toBe("Strike");
+    expect(describeEntry(entry({ action: "strike_set", details: { from: 1, to: 0 } })).label)
+      .toBe("Strike cleared");
   });
 
   it("falls back to a neutral row for an action it does not know", () => {

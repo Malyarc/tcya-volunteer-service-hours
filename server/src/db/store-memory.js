@@ -16,6 +16,9 @@ import {
   ARCHIVE_REASON_RETIRED,
   MIGRATION_PROMOTE_OFFICERS,
   MIGRATION_PURGE_RETIRED,
+  MIGRATION_PURGE_TEST_AUDIT,
+  ARCHIVE_REASON_TEST_AUDIT,
+  TEST_AUDIT_EVENT_PREFIX,
   OFFICER_NAMES,
   RETIRED_MEMBER_NAMES,
 } from "./data-migrations.js";
@@ -832,6 +835,26 @@ export function createMemoryStore(seed) {
         submissions = submissions.filter((s) => !orphaned(s.volunteerName));
       }
       appliedMigrations.add(MIGRATION_PURGE_RETIRED);
+    }
+
+    // Remove the audit entries left by verifying the audit feature against
+    // production. Archived first, like every destructive migration here.
+    if (!appliedMigrations.has(MIGRATION_PURGE_TEST_AUDIT)) {
+      const doomed = auditLog.filter((e) =>
+        String(e.eventName || "").startsWith(TEST_AUDIT_EVENT_PREFIX)
+      );
+      if (doomed.length > 0) {
+        archivedRecords.push({
+          id: crypto.randomUUID(),
+          reason: ARCHIVE_REASON_TEST_AUDIT,
+          payload: { audit: doomed.map((e) => ({ ...e })) },
+          createdAt: nowIso(),
+        });
+        auditLog = auditLog.filter(
+          (e) => !String(e.eventName || "").startsWith(TEST_AUDIT_EVENT_PREFIX)
+        );
+      }
+      appliedMigrations.add(MIGRATION_PURGE_TEST_AUDIT);
     }
   }
 

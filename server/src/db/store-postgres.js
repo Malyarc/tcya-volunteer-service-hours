@@ -18,6 +18,9 @@ import {
   ARCHIVE_REASON_RETIRED,
   MIGRATION_PROMOTE_OFFICERS,
   MIGRATION_PURGE_RETIRED,
+  MIGRATION_PURGE_TEST_AUDIT,
+  ARCHIVE_REASON_TEST_AUDIT,
+  TEST_AUDIT_EVENT_PREFIX,
   OFFICER_NAMES,
   RETIRED_MEMBER_NAMES,
 } from "./data-migrations.js";
@@ -235,6 +238,24 @@ export function createPostgresStore(connectionString) {
             AND NOT EXISTS (
               SELECT 1 FROM app_migrations m WHERE m.name = ${MIGRATION_PURGE_RETIRED})`,
       sql`INSERT INTO app_migrations (name) VALUES (${MIGRATION_PURGE_RETIRED})
+          ON CONFLICT (name) DO NOTHING`,
+
+      // 3. Archive-then-purge the audit entries left by verifying the audit
+      //    feature against production. Same archive-first discipline; matched
+      //    on the scratch events' name prefix so nothing real is touched.
+      sql`INSERT INTO archived_records (reason, payload)
+          SELECT ${ARCHIVE_REASON_TEST_AUDIT}, jsonb_build_object(
+            'audit', (SELECT coalesce(jsonb_agg(to_jsonb(a)), '[]'::jsonb) FROM audit_log a
+                      WHERE a.event_name LIKE ${TEST_AUDIT_EVENT_PREFIX + "%"}))
+          WHERE NOT EXISTS (
+              SELECT 1 FROM app_migrations m WHERE m.name = ${MIGRATION_PURGE_TEST_AUDIT})
+            AND EXISTS (SELECT 1 FROM audit_log a
+                        WHERE a.event_name LIKE ${TEST_AUDIT_EVENT_PREFIX + "%"})`,
+      sql`DELETE FROM audit_log a
+          WHERE a.event_name LIKE ${TEST_AUDIT_EVENT_PREFIX + "%"}
+            AND NOT EXISTS (
+              SELECT 1 FROM app_migrations m WHERE m.name = ${MIGRATION_PURGE_TEST_AUDIT})`,
+      sql`INSERT INTO app_migrations (name) VALUES (${MIGRATION_PURGE_TEST_AUDIT})
           ON CONFLICT (name) DO NOTHING`,
     ];
   }

@@ -215,4 +215,45 @@ if (!URL) {
     await createPostgresStore(URL).ensureReady();
     assert.equal((await sql`SELECT 1 FROM archived_records`).length, 0);
   });
+
+  test("[postgres] the verification purge removes ONLY the scratch-event audit entries", async () => {
+    await resetDb();
+    await createPostgresStore(URL).ensureReady();
+    // Reproduce the production state: audit lines written against scratch
+    // events while the audit feature was being verified, alongside real ones.
+    await sql`DELETE FROM app_migrations WHERE name LIKE '%verification-audit%'`;
+    const ins = async (eventName, action) => sql`
+      INSERT INTO audit_log (actor_role, action, volunteer_name, event_name, event_date)
+      VALUES ('officer', ${action}, 'Tian Zan', ${eventName}, '2026-08-21')`;
+    await ins("ZZ TEMP 4 - audit check (delete me)", "checkin");
+    await ins("ZZ TEMP 4 - audit check (delete me)", "strike_set");
+    await ins("Culture - Beach Cleanup", "checkin");
+    // An entry with NO event (a roster edit) must also survive.
+    await sql`
+      INSERT INTO audit_log (actor_role, action, volunteer_name)
+      VALUES ('admin', 'volunteer_updated', 'Tian Zan')`;
+
+    await createPostgresStore(URL).ensureReady();
+
+    const left = await sql`SELECT event_name, action FROM audit_log ORDER BY event_name`;
+    assert.equal(left.length, 2, "only the two scratch-event entries were removed");
+    assert.deepEqual(
+      left.map((r) => r.event_name).sort(),
+      ["", "Culture - Beach Cleanup"],
+      "the real event entry and the event-less roster edit both survived"
+    );
+
+    const archived = await sql`
+      SELECT payload FROM archived_records WHERE reason LIKE '%verifying the audit log%'`;
+    assert.equal(archived.length, 1, "the removed entries were archived first");
+    assert.equal(archived[0].payload.audit.length, 2, "…and are recoverable");
+
+    // Marker-guarded: a second boot must not archive again.
+    await createPostgresStore(URL).ensureReady();
+    assert.equal(
+      (await sql`SELECT 1 FROM archived_records WHERE reason LIKE '%verifying the audit log%'`).length,
+      1,
+      "the migration ran exactly once"
+    );
+  });
 }

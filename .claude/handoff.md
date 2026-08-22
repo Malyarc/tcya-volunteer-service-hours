@@ -2,7 +2,62 @@
 
 Single source of truth for the project's current state. Last updated: 2026-08-21.
 
-## Round 11 (latest) — the Audit tab
+## Round 12 (latest) — Audit grouped by event, and the test data removed
+
+### Grouped by day, then by EVENT
+
+Several events can run on one day, so the log now nests: a day heading
+("Friday, August 21, 2026", with Today/Yesterday pill and a "2 events · 16
+actions" summary), then one card per event, each a five-column table — **Time ·
+Volunteer · Action · Detail · By**. Actions tied to no event (roster adds and
+edits) collect in a "Roster & records" group at the END of each day.
+
+- **Colour lives on the ACTION CHIP, not the row.** Tinting whole rows turns the
+  table into stripes and nothing stands out; a single coloured chip per row is
+  the scan target. Green in, amber out, navy correction, red strike, slate
+  neutral.
+- Each event header carries a **roll-up of only the kinds that occurred**
+  ("2 in · 2 out · 1 strike"), so a strike is visible before a row is read.
+- The event header enriches from the live event (start–end, expected hours) and
+  marks one that has since been **Deleted** — the log kept the name, so the
+  history still reads.
+- The event's own date shows ONLY when it differs from the day being read; a
+  correction filed weeks later is exactly that case.
+- Desktop and phone are two ARRANGEMENTS of the same pieces, not one responsive
+  grid. The first attempt reused a single grid with reordered, column-spanning
+  cells and it collapsed into a jumble at 375px.
+
+### The verification data is gone
+
+`MIGRATION_PURGE_TEST_AUDIT` — marker-guarded, archives to `archived_records`
+first, matches only the `ZZ TEMP` scratch-event prefix. The audit table is
+append-only by design and has no delete route; this is the one sanctioned way to
+remove from it, following the same pattern as the retired-member purge.
+Standing rule now in CLAUDE.md: plan the cleanup path BEFORE writing test data
+to prod, and prove prod byte-identical to its pre-test baseline afterwards.
+
+### A test gap the mutation pass caught
+
+The chapter-time tests were **vacuous on this machine**. It runs in
+`America/Los_Angeles`, so deleting `timeZone: CHAPTER_TZ` from `pacificDayKey`
+and `formatPacificTime` produced identical output and every timezone test stayed
+green — while the feature would be wrong for any admin outside Pacific, which is
+the entire point of it. `client/package.json` now pins **`TZ=UTC`** for the test
+run, plus a guard test that asserts the machine's own zone differs from the
+rendered one. Both mutations are caught now; keep the pin.
+
+### Verified
+
+Green bar, exit codes captured: server memory **118 pass**, live-Postgres parity
+**211 pass** (1 new: the purge removes only scratch entries, archives first, and
+runs once), client **112 pass**, build clean. **Adversarially audited** — 6
+mutations (strike-cleared mislabelled, an action left unlabelled, day grouping
+and time rendering falling back to the viewer's zone, an August reading labelled
+PST, the purge deleting every entry) each caught after the TZ fix. Run live at
+1280px and 375px with two events on one day plus roster edits: grouping, roll-ups,
+colour, and the phone arrangement all verified.
+
+## Round 11 — the Audit tab
 
 An admin-only chronological log of every action staff take on a volunteer,
 designed first as a canvas and then built. The chapter's question it answers:

@@ -41,13 +41,18 @@ Volunteers · Events** so nothing needs scrolling.
     pre-filled draft) — an easy way for staff to send each volunteer their code.
   - Bulk **QR ID Cards (PDF)** — a printable sheet of every volunteer's card —
     and **Export Roster (Excel)** (contact info + QR payload text).
-- **Audit tab** — a chronological log of every action staff have taken on a
-  volunteer: QR check-ins and check-outs, hand-set times and corrections,
-  strikes recorded or cleared, event attendance changes, and roster edits. Each
-  entry shows what changed, when (in the chapter's Pacific time), and which
-  account did it. Filter by action, by account, by date range, or search a
-  volunteer — clicking a name narrows the log to just that person. Admin-only;
-  an officer gets a `403` even for entries they wrote themselves.
+- **Audit tab** — a log of every action staff have taken on a volunteer,
+  grouped by day and then by **event** (several events can run in one day, so
+  each gets its own table; roster edits collect in a "Roster & records" group).
+  Every row shows the time, the volunteer, a colour-coded action, the
+  before/after detail and which account did it — QR check-ins and check-outs,
+  hand-set times and corrections, strikes recorded or cleared, attendance
+  changes, and roster edits. Each event header carries a roll-up of just the
+  action kinds that occurred, so a strike stands out before you read a row.
+  Times are in the chapter's Pacific time whatever timezone you read from.
+  Filter by action, account or date range, or search a volunteer — clicking a
+  name narrows the log to that person. Admin-only; an officer gets a `403` even
+  for entries they wrote themselves.
 - **Events panel** — create events, manage attendance.
 - **Event Detail** page:
   - **Scan QR** — open the phone camera and scan volunteers' QR codes to

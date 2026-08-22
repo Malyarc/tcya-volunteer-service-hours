@@ -366,7 +366,7 @@ export default function App() {
                 />
               )}
               {isAdmin && adminTab === "audit" && (
-                <AuditPanel rolesByName={rolesByName} />
+                <AuditPanel rolesByName={rolesByName} events={events} />
               )}
               {role && adminTab === "events" && (
                 <EventsPanel

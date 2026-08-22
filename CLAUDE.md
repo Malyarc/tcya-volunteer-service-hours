@@ -124,7 +124,10 @@ Postgres** database.
    before/after rows, so a PATCH that changed nothing records nothing; the event
    name/date are SNAPSHOTS so deleting an event cannot erase its history
    (`event_id` has no FK, deliberately); `reset()` does NOT clear it in either
-   store; and it stores that a contact detail changed, never the value. Reading
+   store; and it stores that a contact detail changed, never the value. The UI groups entries by
+   Pacific DAY and then by EVENT (several events can run in one day), with the
+   event-less actions collected in a "Roster & records" group at the end of each
+   day; colour lives on the action chip, never the row. Reading
    it is `GET /audit`, **admin-only without exception** — an officer who WROTE
    an entry still gets a 403, because the log pairs names with conduct. Actor is
    the ACCOUNT, never a person (shared passcodes) — never present it as an
@@ -138,6 +141,11 @@ Postgres** database.
    saw, and PST/PDT resolves itself. Group by `pacificDayKey`, never by the UTC
    date — a 7:30 PM Pacific entry is 02:30Z the NEXT day and would file under
    tomorrow. `pacificAbbrev` exists so an August reading is not labelled "PST".
+   **The client test script pins `TZ=UTC`** (`client/package.json`) and must keep
+   doing so: this machine is in `America/Los_Angeles`, where code that forgot the
+   explicit `timeZone` produces identical output and every timezone test passes
+   green while the feature is broken for everyone outside Pacific. Mutation
+   testing only caught it once the suite stopped running in the chapter's zone.
 
 2. **Deleting an event (or removing a volunteer from one) deletes the derived
    submissions** so no orphaned "pending" rows linger in the roster.
@@ -215,6 +223,13 @@ npm run build --prefix client   # tsc -b && vite build
 
 **When you add a table**, add it to the `TRUNCATE` in `store-parity.test.js` —
 state leaking between parity tests is exactly how the audit log first "failed".
+
+**Verifying against prod means cleaning up after yourself.** Scratch events and
+the audit entries they generate must be removed once a live check is done, and
+prod proved byte-identical to its pre-test baseline. `audit_log` has no delete
+route by design, so the sanctioned removal is a marker-guarded, archive-first
+migration in `data-migrations.js` (see `MIGRATION_PURGE_TEST_AUDIT`) — or better,
+verify the write path against the local parity stack and keep prod reads-only.
 
 **MANDATORY pre-deploy gate:** the default `npm test` is memory-only. Because the
 production data layer is Postgres, run the parity suite before every deploy.

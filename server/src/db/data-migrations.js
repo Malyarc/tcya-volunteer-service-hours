@@ -45,8 +45,24 @@ export const RETIRED_MEMBER_NAMES = [
   "Xiqiao Ma",
 ];
 
+// Audit entries written against PRODUCTION while verifying the audit feature
+// itself. The scratch events they refer to were created and deleted during that
+// check, so these lines describe work nobody did on a real event — clutter in a
+// log whose whole value is that everything in it is real.
+//
+// Matched on the event-name prefix the scratch events all carried. The audit
+// table is otherwise append-only by design; this is the one sanctioned way to
+// remove from it, and like every migration here it archives first and runs once.
+export const TEST_AUDIT_EVENT_PREFIX = "ZZ TEMP";
+
 export const MIGRATION_PROMOTE_OFFICERS = "2026-08-16-promote-officers";
 export const MIGRATION_PURGE_RETIRED = "2026-08-16-purge-retired-member-records";
+export const MIGRATION_PURGE_TEST_AUDIT =
+  "2026-08-21-purge-verification-audit-entries";
+
+export const ARCHIVE_REASON_TEST_AUDIT =
+  "Audit entries created by scratch events while verifying the audit log " +
+  "against production (migration " + MIGRATION_PURGE_TEST_AUDIT + ")";
 
 export const ARCHIVE_REASON_RETIRED =
   "Attendance + derived hours of former members removed from the roster " +
@@ -55,4 +71,5 @@ export const ARCHIVE_REASON_RETIRED =
 export const DATA_MIGRATION_NAMES = [
   MIGRATION_PROMOTE_OFFICERS,
   MIGRATION_PURGE_RETIRED,
+  MIGRATION_PURGE_TEST_AUDIT,
 ];

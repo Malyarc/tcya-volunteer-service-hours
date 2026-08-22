@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AccountRole, AuditAction, AuditEntry } from "../../types";
+import type { AccountRole, AuditAction, AuditEntry, VolunteerEvent } from "../../types";
 import { fetchAudit } from "../../api";
-import { formatDisplayId } from "../../qr";
 import {
+  formatDate,
+  formatHours,
   formatPacificDayLabel,
   formatPacificTime,
+  formatTime12h,
   pacificAbbrev,
   pacificDayKey,
   pacificTodayKey,
@@ -98,6 +100,9 @@ const str = (v: unknown) => (typeof v === "string" ? v : "");
 // pure function of the entry so it can be unit-tested without rendering.
 export function describeEntry(e: AuditEntry): {
   family: Family;
+  // Short label for the Action column's chip ("Checked in").
+  label: string;
+  // Sentence form, for anywhere the entry reads as prose.
   verb: string;
   detail: string;
   method: string;
@@ -108,37 +113,40 @@ export function describeEntry(e: AuditEntry): {
     str(d.method) === "scan" ? "QR scan" : str(d.method) === "manual" ? "by hand" : "";
   switch (e.action) {
     case "checkin":
-      return { family: "checkin", verb: "checked in", method,
-        detail: d.to ? `Check-in set to ${formatPacificTime(str(d.to))}` : "" };
+      return { family: "checkin", label: "Checked in", verb: "checked in", method,
+        detail: d.to ? `Set to ${formatPacificTime(str(d.to))}` : "" };
     case "checkout":
-      return { family: "checkout", verb: "checked out", method,
-        detail: d.to ? `Check-out set to ${formatPacificTime(str(d.to))}` : "" };
+      return { family: "checkout", label: "Checked out", verb: "checked out", method,
+        detail: d.to ? `Set to ${formatPacificTime(str(d.to))}` : "" };
     case "checkin_cleared":
     case "checkout_cleared":
-      return { family: "cleared", verb: `had their ${side.toLowerCase()} cleared`, method: "",
+      return { family: "cleared", label: `${side} cleared`,
+        verb: `had their ${side.toLowerCase()} cleared`, method: "",
         detail: d.from ? `Was ${formatPacificTime(str(d.from))} — these hours stopped counting` : "" };
     case "time_corrected":
-      return { family: "correct", verb: "had a time corrected", method: "",
+      return { family: "correct", label: "Time corrected", verb: "had a time corrected", method: "",
         detail: `${side} ${formatPacificTime(str(d.from))} → ${formatPacificTime(str(d.to))}` };
     case "strike_set": {
       const up = num(d.to) > num(d.from);
       return { family: up ? "strike" : "cleared",
+        label: up ? "Strike" : "Strike cleared",
         verb: up ? "was given a strike" : "had a strike cleared", method: "",
         detail: `${num(d.from)} → ${num(d.to)}` };
     }
     case "attendee_added":
-      return { family: "roster", verb: "was added to the event", method: "", detail: "" };
+      return { family: "roster", label: "Added", verb: "was added to the event",
+        method: "", detail: "" };
     case "attendee_removed": {
       const bits: string[] = [];
       if (d.checkinAt) bits.push(`check-in ${formatPacificTime(str(d.checkinAt))}`);
       if (d.checkoutAt) bits.push(`check-out ${formatPacificTime(str(d.checkoutAt))}`);
       if (num(d.strikes) > 0) bits.push(`${num(d.strikes)} strike${num(d.strikes) === 1 ? "" : "s"}`);
-      return { family: "danger", verb: "was removed from the event", method: "",
+      return { family: "danger", label: "Removed", verb: "was removed from the event", method: "",
         detail: bits.length ? `Removed with ${bits.join(", ")}` : "" };
     }
     case "volunteer_created":
-      return { family: "roster", verb: "was added to the roster", method: "",
-        detail: [str(d.grade), str(d.role)].filter(Boolean).join(" · ") };
+      return { family: "roster", label: "Added to roster", verb: "was added to the roster",
+        method: "", detail: [str(d.grade), str(d.role)].filter(Boolean).join(" · ") };
     case "volunteer_updated": {
       const bits: string[] = [];
       if (d.nameTo) bits.push(`name ${str(d.nameFrom)} → ${str(d.nameTo)}`);
@@ -147,13 +155,14 @@ export function describeEntry(e: AuditEntry): {
       if (d.email) bits.push("email changed");
       if (d.phone) bits.push("phone changed");
       if (d.customFields) bits.push("custom fields changed");
-      return { family: "correct", verb: "had their record edited", method: "",
-        detail: bits.join(" · ") };
+      return { family: "correct", label: "Record edited", verb: "had their record edited",
+        method: "", detail: bits.join(" · ") };
     }
     case "volunteer_deleted":
-      return { family: "danger", verb: "was removed from the roster", method: "", detail: "" };
+      return { family: "danger", label: "Removed from roster",
+        verb: "was removed from the roster", method: "", detail: "" };
     default:
-      return { family: "roster", verb: "was updated", method: "", detail: "" };
+      return { family: "roster", label: "Updated", verb: "was updated", method: "", detail: "" };
   }
 }
 
@@ -181,13 +190,55 @@ const RANGE_FILTERS: Array<{ value: string; label: string; days: number | null }
   { value: "", label: "All time", days: null },
 ];
 
-interface Props {
-  // Roster roles, so a name in the log can carry the same badges it carries
-  // everywhere else.
-  rolesByName: Map<string, "volunteer" | "officer">;
+// A group of entries that all happened at ONE event on ONE day — or, for the
+// actions that belong to no event (roster edits), the day's catch-all.
+interface Group {
+  key: string;
+  isRoster: boolean;
+  name: string;
+  meta: string;
+  deleted: boolean;
+  rollup: Array<{ family: Family; n: number; label: string }>;
+  rows: AuditEntry[];
 }
 
-export function AuditPanel({ rolesByName }: Props) {
+const ROSTER_KEY = "__roster__";
+
+// Count the action families in a group, in a stable order, keeping only the
+// ones that actually occurred — a roll-up listing zeroes is noise, and the
+// point of it is that a strike is visible before any row is read.
+const ROLLUP_ORDER: Array<{ family: Family; one: string; many: string }> = [
+  { family: "checkin", one: "in", many: "in" },
+  { family: "checkout", one: "out", many: "out" },
+  { family: "correct", one: "correction", many: "corrections" },
+  { family: "strike", one: "strike", many: "strikes" },
+  { family: "cleared", one: "cleared", many: "cleared" },
+  { family: "danger", one: "removal", many: "removals" },
+  { family: "roster", one: "added", many: "added" },
+];
+
+function buildRollup(rows: AuditEntry[]): Group["rollup"] {
+  const counts = new Map<Family, number>();
+  for (const r of rows) {
+    const f = describeEntry(r).family;
+    counts.set(f, (counts.get(f) ?? 0) + 1);
+  }
+  return ROLLUP_ORDER.filter((o) => counts.get(o.family)).map((o) => {
+    const n = counts.get(o.family) as number;
+    return { family: o.family, n, label: n === 1 ? o.one : o.many };
+  });
+}
+
+interface Props {
+  // Roster roles, so a name in the log carries the same badges it carries
+  // everywhere else.
+  rolesByName: Map<string, "volunteer" | "officer">;
+  // Live events, used to enrich an event group's header with its schedule — and
+  // to say plainly when the event it refers to no longer exists.
+  events: VolunteerEvent[];
+}
+
+export function AuditPanel({ rolesByName, events }: Props) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -229,6 +280,12 @@ export function AuditPanel({ rolesByName }: Props) {
     load();
   }, [load]);
 
+  const eventsById = useMemo(() => {
+    const m = new Map<string, VolunteerEvent>();
+    for (const e of events) m.set(e.id, e);
+    return m;
+  }, [events]);
+
   // Free-text narrowing happens on the loaded page: the server filters by the
   // structured fields, and this catches "show me Andrew" without a round-trip.
   const filtered = useMemo(() => {
@@ -242,23 +299,79 @@ export function AuditPanel({ rolesByName }: Props) {
     );
   }, [entries, query]);
 
-  // Grouped by the PACIFIC day, newest day first. The server already sorts
-  // newest-first, so insertion order into the map is the display order.
+  // Day → event. Several events can run on one day, so each gets its own table;
+  // the entries with no event collect in one group at the END of the day, since
+  // they are bookkeeping rather than what happened at an event.
+  //
+  // The server already sorts newest-first, so insertion order into each map IS
+  // the display order — no re-sorting, and a group's position follows its most
+  // recent entry.
   const days = useMemo(() => {
     const todayKey = pacificTodayKey();
-    const map = new Map<string, AuditEntry[]>();
+    const byDay = new Map<string, Map<string, AuditEntry[]>>();
     for (const e of filtered) {
-      const key = pacificDayKey(e.at);
-      const list = map.get(key);
-      if (list) list.push(e);
-      else map.set(key, [e]);
+      const dayKey = pacificDayKey(e.at);
+      let groups = byDay.get(dayKey);
+      if (!groups) byDay.set(dayKey, (groups = new Map()));
+      const gKey = e.eventId || ROSTER_KEY;
+      const rows = groups.get(gKey);
+      if (rows) rows.push(e);
+      else groups.set(gKey, [e]);
     }
-    return [...map.entries()].map(([key, list]) => ({
-      key,
-      label: formatPacificDayLabel(key, todayKey),
-      list,
-    }));
-  }, [filtered]);
+
+    return [...byDay.entries()].map(([dayKey, groupMap]) => {
+      const groups: Group[] = [...groupMap.entries()].map(([gKey, rows]) => {
+        if (gKey === ROSTER_KEY) {
+          return {
+            key: gKey, isRoster: true, deleted: false,
+            name: "Roster & records",
+            meta: "Changes not tied to an event",
+            rollup: buildRollup(rows), rows,
+          };
+        }
+        const live = eventsById.get(gKey);
+        const first = rows[0];
+        const bits: string[] = [];
+        // Only when it differs from the day being read: repeating the day
+        // heading on every event header is noise, but a correction filed weeks
+        // after the event is precisely when the event's own date matters.
+        if (first.eventDate && first.eventDate !== dayKey) {
+          bits.push(`Event ${formatDate(first.eventDate)}`);
+        }
+        if (live?.startTime) {
+          bits.push(
+            live.endTime
+              ? `${formatTime12h(live.startTime)} – ${formatTime12h(live.endTime)}`
+              : formatTime12h(live.startTime)
+          );
+        }
+        if (live && live.expectedHours !== null) {
+          bits.push(`expected ${formatHours(live.expectedHours)} hrs`);
+        }
+        return {
+          key: gKey, isRoster: false, deleted: !live,
+          name: first.eventName || "Event",
+          meta: bits.join(" · "),
+          rollup: buildRollup(rows), rows,
+        };
+      });
+      // The event-less group is bookkeeping — it belongs after the events.
+      groups.sort((a, b) => Number(a.isRoster) - Number(b.isRoster));
+
+      const total = groups.reduce((n, g) => n + g.rows.length, 0);
+      const eventCount = groups.filter((g) => !g.isRoster).length;
+      return {
+        key: dayKey,
+        label: formatPacificDayLabel(dayKey, todayKey),
+        full: formatFullDay(dayKey),
+        summary:
+          (eventCount > 0 ? `${eventCount} event${eventCount === 1 ? "" : "s"} · ` : "") +
+          `${total} action${total === 1 ? "" : "s"}`,
+        isToday: dayKey === todayKey,
+        groups,
+      };
+    });
+  }, [filtered, eventsById]);
 
   const zone = pacificAbbrev();
   const filtersActive = Boolean(action || actor || query.trim() || range !== "7");
@@ -269,9 +382,21 @@ export function AuditPanel({ rolesByName }: Props) {
     const names = new Set(filtered.map((e) => e.volunteerName));
     return names.size === 1 ? [...names][0] : null;
   }, [filtered, query]);
+  const eventTotal = useMemo(
+    () => days.reduce((n, d) => n + d.groups.filter((g) => !g.isRoster).length, 0),
+    [days]
+  );
+
+  function clearFilters() {
+    setAction("");
+    setActor("");
+    setRange("7");
+    setQuery("");
+    setLimit(PAGE);
+  }
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-5">
       <div className="card overflow-hidden">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
           <div>
@@ -280,7 +405,7 @@ export function AuditPanel({ rolesByName }: Props) {
               <span className="badge bg-accent-100 text-accent-700">Admin</span>
             </div>
             <p className="text-sm text-slate-500">
-              Every action staff have taken on a volunteer, newest first.
+              Every action staff have taken on a volunteer, grouped by event.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -294,12 +419,7 @@ export function AuditPanel({ rolesByName }: Props) {
               </svg>
               All times Pacific ({zone})
             </span>
-            <button
-              onClick={load}
-              className="btn-secondary py-1.5 text-sm"
-              disabled={loading}
-              title="Re-read the log"
-            >
+            <button onClick={load} className="btn-secondary py-1.5 text-sm" disabled={loading} title="Re-read the log">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
                 <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
                 <path d="M21 3v5h-5" />
@@ -309,7 +429,6 @@ export function AuditPanel({ rolesByName }: Props) {
           </div>
         </div>
 
-        {/* Filters */}
         <div className="grid grid-cols-1 gap-3 px-5 py-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.6fr)_repeat(3,minmax(0,1fr))]">
           <div className="relative">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400">
@@ -328,25 +447,17 @@ export function AuditPanel({ rolesByName }: Props) {
           <select
             aria-label="Filter by action"
             value={action}
-            onChange={(e) => {
-              setAction(e.target.value);
-              setLimit(PAGE);
-            }}
+            onChange={(e) => { setAction(e.target.value); setLimit(PAGE); }}
             className="input"
           >
             {ACTION_FILTERS.map((a) => (
-              <option key={a.value} value={a.value}>
-                {a.label}
-              </option>
+              <option key={a.value} value={a.value}>{a.label}</option>
             ))}
           </select>
           <select
             aria-label="Filter by who did it"
             value={actor}
-            onChange={(e) => {
-              setActor(e.target.value as "" | AccountRole);
-              setLimit(PAGE);
-            }}
+            onChange={(e) => { setActor(e.target.value as "" | AccountRole); setLimit(PAGE); }}
             className="input"
           >
             <option value="">Anyone</option>
@@ -356,16 +467,11 @@ export function AuditPanel({ rolesByName }: Props) {
           <select
             aria-label="Filter by date range"
             value={range}
-            onChange={(e) => {
-              setRange(e.target.value);
-              setLimit(PAGE);
-            }}
+            onChange={(e) => { setRange(e.target.value); setLimit(PAGE); }}
             className="input"
           >
             {RANGE_FILTERS.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
-              </option>
+              <option key={r.value} value={r.value}>{r.label}</option>
             ))}
           </select>
         </div>
@@ -375,24 +481,14 @@ export function AuditPanel({ rolesByName }: Props) {
             Showing <span className="font-semibold tabular-nums text-slate-700">{filtered.length}</span>{" "}
             {filtered.length === 1 ? "entry" : "entries"}
             {soleVolunteer ? (
-              <>
-                {" "}for <span className="font-semibold text-slate-700">{soleVolunteer}</span>
-              </>
-            ) : (
-              filtersActive && " matching your filters"
-            )}
+              <> for <span className="font-semibold text-slate-700">{soleVolunteer}</span></>
+            ) : eventTotal > 0 ? (
+              <> across <span className="font-semibold tabular-nums text-slate-700">{eventTotal}</span>{" "}
+                {eventTotal === 1 ? "event" : "events"}</>
+            ) : null}
           </span>
           {filtersActive && (
-            <button
-              onClick={() => {
-                setAction("");
-                setActor("");
-                setRange("7");
-                setQuery("");
-                setLimit(PAGE);
-              }}
-              className="font-semibold text-brand-700 hover:text-brand-900"
-            >
+            <button onClick={clearFilters} className="font-semibold text-brand-700 hover:text-brand-900">
               Clear filters
             </button>
           )}
@@ -408,64 +504,67 @@ export function AuditPanel({ rolesByName }: Props) {
         </div>
       )}
 
-      <div className="card overflow-hidden">
-        {loading && entries.length === 0 ? (
-          <div className="px-5 py-16 text-center text-sm text-slate-500">Loading the log…</div>
-        ) : days.length === 0 ? (
-          <div className="px-5 py-16 text-center">
-            <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-400">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
-                <path d="M12 8v4l3 2" />
-                <circle cx="12" cy="12" r="9" />
-              </svg>
-            </div>
-            <p className="text-sm font-medium text-slate-700">
-              {filtersActive ? "Nothing matches those filters." : "No activity recorded yet."}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              {filtersActive
-                ? "Try a wider date range, or clear the filters."
-                : "The log fills as staff scan volunteers in and out."}
-            </p>
+      {loading && entries.length === 0 ? (
+        <div className="card px-5 py-16 text-center text-sm text-slate-500">Loading the log…</div>
+      ) : days.length === 0 ? (
+        <div className="card px-5 py-16 text-center">
+          <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-full bg-slate-100 text-slate-400">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+              <path d="M12 8v4l3 2" />
+              <circle cx="12" cy="12" r="9" />
+            </svg>
           </div>
-        ) : (
-          <>
-            {days.map((day) => (
-              <div key={day.key}>
-                <div className="flex items-baseline gap-2.5 border-b border-slate-100 bg-slate-50/70 px-5 py-2.5">
-                  <span className="text-[13px] font-bold text-slate-900">{day.label}</span>
-                  <span className="text-xs text-slate-400">{formatFullDay(day.key)}</span>
-                  <span className="ml-auto text-xs text-slate-400">
-                    {day.list.length} {day.list.length === 1 ? "entry" : "entries"}
-                  </span>
-                </div>
-                {day.list.map((e) => (
-                  <AuditRow
-                    key={e.id}
-                    entry={e}
-                    role={rolesByName.get(e.volunteerName)}
-                    onPickVolunteer={setQuery}
-                  />
-                ))}
-              </div>
-            ))}
-            {entries.length >= limit && (
-              <div className="flex items-center justify-center border-t border-slate-100 px-5 py-3.5">
-                <button
-                  onClick={() => setLimit((n) => n + PAGE)}
-                  className="btn-secondary py-1.5 text-sm"
-                  disabled={loading}
+          <p className="text-sm font-medium text-slate-700">
+            {filtersActive ? "Nothing matches those filters." : "No activity recorded yet."}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {filtersActive
+              ? "Try a wider date range, or clear the filters."
+              : "The log fills as staff scan volunteers in and out."}
+          </p>
+        </div>
+      ) : (
+        <>
+          {days.map((day) => (
+            <div key={day.key} className="space-y-3">
+              {/* The day heading is the strongest divider on the page. */}
+              <div className="flex items-center gap-3 px-0.5">
+                <span
+                  className={`inline-flex flex-none items-center rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
+                    day.isToday ? "bg-brand-700 text-white" : "bg-slate-200 text-slate-600"
+                  }`}
                 >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
-                    <path d="m6 9 6 6 6-6" />
-                  </svg>
-                  {loading ? "Loading…" : "Load older entries"}
-                </button>
+                  {day.label}
+                </span>
+                <h3 className="truncate text-base font-bold tracking-tight text-slate-900">
+                  {day.full}
+                </h3>
+                <div className="h-px flex-1 bg-slate-200" />
+                <span className="flex-none text-xs font-medium text-slate-400">{day.summary}</span>
               </div>
-            )}
-          </>
-        )}
-      </div>
+
+              {day.groups.map((g) => (
+                <EventGroup
+                  key={g.key}
+                  group={g}
+                  rolesByName={rolesByName}
+                  onPickVolunteer={setQuery}
+                />
+              ))}
+            </div>
+          ))}
+          {entries.length >= limit && (
+            <div className="flex items-center justify-center pt-1">
+              <button onClick={() => setLimit((n) => n + PAGE)} className="btn-secondary py-1.5 text-sm" disabled={loading}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+                {loading ? "Loading…" : "Load older entries"}
+              </button>
+            </div>
+          )}
+        </>
+      )}
     </section>
   );
 }
@@ -475,9 +574,108 @@ function formatFullDay(dayKey: string): string {
   if (!y || !m || !d) return "";
   return new Date(y, m - 1, d).toLocaleDateString(undefined, {
     weekday: "long",
+    year: "numeric",
     month: "long",
     day: "numeric",
   });
+}
+
+// One event's table for one day. The five columns ARE the record: when, who,
+// what, the before/after, and which account. Everything else the entry holds is
+// already implied by the group it sits in.
+//
+// Desktop lays those five out as a grid; a phone stacks them. They are two
+// ARRANGEMENTS of the same pieces rather than one responsive grid — a single
+// grid with reordered, column-spanning cells collapses into a jumble at narrow
+// widths, which is exactly what it did before this was split.
+const DESKTOP_GRID =
+  "grid-cols-[74px_minmax(0,1.05fr)_150px_minmax(0,1.2fr)_76px] gap-x-3";
+
+function EventGroup({
+  group,
+  rolesByName,
+  onPickVolunteer,
+}: {
+  group: Group;
+  rolesByName: Map<string, "volunteer" | "officer">;
+  onPickVolunteer: (name: string) => void;
+}) {
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div
+            className={`flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[9px] border ${
+              group.isRoster
+                ? "border-slate-200 bg-slate-50 text-slate-600"
+                : "border-brand-100 bg-brand-50 text-brand-700"
+            }`}
+            aria-hidden
+          >
+            {group.isRoster ? (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="h-[15px] w-[15px]">
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <circle cx="9" cy="10" r="2" />
+                <path d="M15 9h3M15 13h3M7 16h10" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="h-[15px] w-[15px]">
+                <rect x="3" y="4" width="18" height="18" rx="2" />
+                <path d="M16 2v4M8 2v4M3 10h18" />
+              </svg>
+            )}
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="text-[15px] font-semibold text-slate-900">{group.name}</span>
+              {group.deleted && (
+                <span
+                  className="inline-flex flex-none items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-px text-[10px] font-semibold uppercase tracking-wide text-slate-500"
+                  title="This event has since been deleted — the log kept its name so the history still reads."
+                >
+                  Deleted
+                </span>
+              )}
+            </div>
+            {group.meta && <div className="mt-px text-xs text-slate-400">{group.meta}</div>}
+          </div>
+        </div>
+        {/* Only the kinds that actually occurred, so a strike is visible before
+            a single row has been read. */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {group.rollup.map((r) => (
+            <span
+              key={r.family}
+              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${FAMILY_STYLE[r.family]}`}
+            >
+              <span className="tabular-nums">{r.n}</span>
+              <span>{r.label}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Column headings — desktop only; on a phone each row is self-labelling. */}
+      <div
+        className={`hidden border-y border-slate-100 bg-slate-50/70 px-5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 sm:grid ${DESKTOP_GRID}`}
+      >
+        <div>Time</div>
+        <div>Volunteer</div>
+        <div>Action</div>
+        <div>Detail</div>
+        <div className="text-right">By</div>
+      </div>
+
+      {group.rows.map((e) => (
+        <AuditRow
+          key={e.id}
+          entry={e}
+          role={rolesByName.get(e.volunteerName)}
+          onPickVolunteer={onPickVolunteer}
+        />
+      ))}
+    </div>
+  );
 }
 
 function AuditRow({
@@ -491,60 +689,86 @@ function AuditRow({
   // this volunteer" view, without a second page to navigate to and back from.
   onPickVolunteer: (name: string) => void;
 }) {
-  const { family, verb, detail, method } = describeEntry(entry);
+  const { family, label, detail, method } = describeEntry(entry);
+
+  const time = (
+    <span className="whitespace-nowrap text-[13px] font-semibold tabular-nums text-slate-700">
+      {formatPacificTime(entry.at)}
+    </span>
+  );
+
+  const volunteer = entry.volunteerName ? (
+    <button
+      type="button"
+      onClick={() => onPickVolunteer(entry.volunteerName)}
+      title={`Show everything recorded for ${entry.volunteerName}`}
+      className="whitespace-nowrap rounded text-[13px] font-semibold text-slate-900 underline-offset-2 hover:underline focus:outline-none focus:ring-2 focus:ring-brand-400"
+    >
+      {entry.volunteerName}
+    </button>
+  ) : (
+    <span className="text-[13px] font-semibold text-slate-400">—</span>
+  );
+
+  // The colour lives on the chip, not the row: tinting every row turns the
+  // table into stripes and nothing stands out.
+  const chip = (
+    <span
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${FAMILY_STYLE[family]}`}
+    >
+      <FamilyIcon family={family} />
+      {label}
+    </span>
+  );
+
+  const detailCell = (detail || method) && (
+    <>
+      {detail}
+      {method && (
+        <span className="ml-1.5 inline-flex items-center rounded bg-slate-100 px-1.5 py-px text-[10px] font-semibold text-slate-500">
+          {method}
+        </span>
+      )}
+    </>
+  );
+
   return (
-    <div className="flex items-start gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0 hover:bg-slate-50/50 sm:items-center sm:gap-4 sm:px-5">
-      <div
-        className={`flex h-[34px] w-[34px] flex-none items-center justify-center rounded-full border ${FAMILY_STYLE[family]}`}
-        aria-hidden
-      >
-        <FamilyIcon family={family} />
-      </div>
-
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-          {entry.volunteerName ? (
-            <button
-              type="button"
-              onClick={() => onPickVolunteer(entry.volunteerName)}
-              title={`Show everything recorded for ${entry.volunteerName}`}
-              className="whitespace-nowrap rounded text-sm font-semibold text-slate-900 underline-offset-2 hover:underline focus:outline-none focus:ring-2 focus:ring-brand-400"
-            >
-              {entry.volunteerName}
-            </button>
-          ) : (
-            <span className="text-sm font-semibold text-slate-400">—</span>
-          )}
-          <VolunteerBadges name={entry.volunteerName} role={role} size="sm" />
-          <span className="text-sm text-slate-600">{verb}</span>
-          {method && (
-            <span className="inline-flex flex-none items-center rounded-md bg-slate-100 px-1.5 py-px text-[11px] font-semibold text-slate-500">
-              {method}
-            </span>
-          )}
+    <>
+      {/* Phone: chip + time lead, then who, then the detail. */}
+      <div className="border-t border-slate-100 px-4 py-2.5 sm:hidden">
+        <div className="flex items-center justify-between gap-2">
+          {chip}
+          {time}
         </div>
-        <div className="mt-0.5 flex flex-col gap-x-1.5 text-xs text-slate-400 sm:flex-row sm:flex-wrap sm:items-center">
-          {entry.eventName && <span className="sm:truncate">{entry.eventName}</span>}
-          {entry.eventName && detail && (
-            <span className="hidden text-slate-300 sm:inline">·</span>
-          )}
-          {detail && <span className="text-slate-500">{detail}</span>}
-          {!entry.eventName && !detail && entry.volunteerCode && (
-            <span>{formatDisplayId(entry.volunteerCode)}</span>
-          )}
-        </div>
-      </div>
-
-      <div className="flex flex-none flex-col items-end gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-        <div className="text-right leading-tight">
-          <div className="whitespace-nowrap text-[13px] font-semibold tabular-nums text-slate-700">
-            {formatPacificTime(entry.at)}
+        {/* The volunteer's own Officer badge and the acting account's Officer
+            badge are both green pills; side by side they read as one thing. On
+            desktop separate columns keep them apart — here, opposite ends do. */}
+        <div className="mt-1.5 flex items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+            {volunteer}
+            <VolunteerBadges name={entry.volunteerName} role={role} size="sm" />
           </div>
-          <div className="text-[11px] text-slate-400">{pacificAbbrev(entry.at)}</div>
+          <ActorBadge role={entry.actorRole} />
         </div>
-        <ActorBadge role={entry.actorRole} />
+        {detailCell && <div className="mt-1 text-xs text-slate-500">{detailCell}</div>}
       </div>
-    </div>
+
+      {/* Desktop: the five columns. */}
+      <div
+        className={`hidden items-center border-t border-slate-100 px-5 py-2 hover:bg-slate-50/60 sm:grid ${DESKTOP_GRID}`}
+      >
+        <div>{time}</div>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+          {volunteer}
+          <VolunteerBadges name={entry.volunteerName} role={role} size="sm" />
+        </div>
+        <div>{chip}</div>
+        <div className="min-w-0 text-xs text-slate-500">{detailCell}</div>
+        <div className="justify-self-end">
+          <ActorBadge role={entry.actorRole} />
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -559,7 +783,7 @@ function ActorBadge({ role }: { role: AccountRole }) {
           ? "Recorded by the Officer account. The passcode is shared, so this identifies the account, not a person."
           : "Recorded by the Admin account. The passcode is shared, so this identifies the account, not a person."
       }
-      className={`inline-flex min-w-[66px] flex-none items-center justify-center rounded-full border px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide ${
+      className={`inline-flex min-w-[64px] flex-none items-center justify-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
         officer
           ? "border-emerald-300/70 bg-emerald-50 text-emerald-700"
           : "border-accent-200 bg-accent-50 text-accent-700"
