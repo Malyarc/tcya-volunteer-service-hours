@@ -1722,6 +1722,307 @@ export function runSuite(withServer, label) {
     });
   });
 
+  // ---------------- Audit log ----------------
+  //
+  // An append-only record of every action a staff account took ON a volunteer.
+  // The rules that matter: it records what CHANGED (never a no-op), it snapshots
+  // the event so a deletion cannot erase the history, and it is admin-only.
+
+  test(name("a QR scan records a check-in and a check-out, with the actor"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, V1);
+
+      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+      await api.send("POST", `/api/events/${event.id}/checkout`, { code }, officer);
+
+      const log = (await api.get("/api/audit", auth)).body;
+      const mine = log.filter((e) => e.volunteerName === V1);
+      // Newest first.
+      assert.equal(mine[0].action, "checkout");
+      assert.equal(mine[1].action, "checkin");
+      for (const e of mine.slice(0, 2)) {
+        assert.equal(e.actorRole, "officer", "the officer at the door is the actor");
+        assert.equal(e.details.method, "scan", "…and the QR scanner is the method");
+        assert.equal(e.eventId, event.id);
+        assert.equal(e.eventName, "Culture - Beach Cleanup", "the event name is snapshotted");
+        assert.equal(e.eventDate, "2026-03-15");
+        assert.ok(Date.parse(e.at) > 0, "every entry carries an absolute instant");
+        assert.ok(e.details.to, "…and the time it stamped");
+      }
+    });
+  });
+
+  test(name("a repeat scan changes nothing, so it records nothing"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, V1);
+
+      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+      const again = await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+      assert.equal(again.body.alreadyDone, true, "the store treated it as a repeat");
+
+      const checkins = (await api.get("/api/audit", auth)).body.filter(
+        (e) => e.action === "checkin" && e.volunteerName === V1
+      );
+      assert.equal(checkins.length, 1, "a duplicate scan must not double the log");
+    });
+  });
+
+  test(name("an admin's manual time edit records a correction with before and after"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V1] }, auth);
+
+      // First set — nothing was there before, so this is a check-in, not a fix.
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, checkinAt: "2026-03-15T16:00:00.000Z" },
+        auth
+      );
+      // Then move it — THAT is a correction.
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, checkinAt: "2026-03-15T15:30:00.000Z" },
+        auth
+      );
+
+      const log = (await api.get("/api/audit", auth)).body.filter((e) => e.volunteerName === V1);
+      assert.equal(log[0].action, "time_corrected");
+      assert.equal(log[0].actorRole, "admin");
+      assert.equal(log[0].details.side, "checkin");
+      assert.equal(log[0].details.from, "2026-03-15T16:00:00.000Z");
+      assert.equal(log[0].details.to, "2026-03-15T15:30:00.000Z");
+      assert.equal(log[1].action, "checkin");
+      assert.equal(log[1].details.method, "manual", "set by hand, not scanned");
+      assert.equal(log[2].action, "attendee_added");
+    });
+  });
+
+  test(name("clearing a time is recorded as a clear, not a correction"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await logHours(api, auth, event.id, V1, "2026-03-15T16:00:00.000Z", "2026-03-15T19:00:00.000Z");
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, volunteerCheckout: false },
+        auth
+      );
+      const log = (await api.get("/api/audit", auth)).body.filter((e) => e.volunteerName === V1);
+      assert.equal(log[0].action, "checkout_cleared");
+      assert.equal(log[0].details.from, "2026-03-15T19:00:00.000Z", "it says what was lost");
+    });
+  });
+
+  test(name("a PATCH that changes nothing records nothing"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const event = await makeEvent(api, auth);
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V1] }, auth);
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, checkinAt: "2026-03-15T16:00:00.000Z" },
+        auth
+      );
+      const before = (await api.get("/api/audit", auth)).body.length;
+      // Same value again, and a strike set to the value it already holds.
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance`,
+        { volunteerName: V1, checkinAt: "2026-03-15T16:00:00.000Z" },
+        auth
+      );
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        { volunteerName: V1, strikes: 0 },
+        auth
+      );
+      assert.equal(
+        (await api.get("/api/audit", auth)).body.length,
+        before,
+        "the log records changes, not requests"
+      );
+    });
+  });
+
+  test(name("a strike records who set it and the count either side"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, V1);
+      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        { volunteerName: V1, strikes: 1 },
+        officer
+      );
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        { volunteerName: V1, strikes: 0 },
+        auth
+      );
+
+      const log = (await api.get("/api/audit", auth)).body.filter((e) => e.action === "strike_set");
+      assert.equal(log[0].actorRole, "admin", "the admin cleared it");
+      assert.deepEqual([log[0].details.from, log[0].details.to], [1, 0]);
+      assert.equal(log[1].actorRole, "officer", "the officer at the door recorded it");
+      assert.deepEqual([log[1].details.from, log[1].details.to], [0, 1]);
+    });
+  });
+
+  test(name("roster edits are recorded, and never store contact details"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const created = await api.send(
+        "POST",
+        "/api/volunteers",
+        { name: "Audit Test Person", grade: "9th", email: "secret@example.com", phone: "555-0100" },
+        auth
+      );
+      assert.equal(created.status, 201);
+      const id = created.body.id;
+
+      await api.send("PATCH", `/api/volunteers/${id}`, { role: "officer", grade: "10th" }, auth);
+      await api.send("PATCH", `/api/volunteers/${id}`, { email: "other@example.com" }, auth);
+      await api.send("DELETE", `/api/volunteers/${id}`, undefined, auth);
+
+      const log = (await api.get("/api/audit", auth)).body.filter(
+        (e) => e.volunteerName === "Audit Test Person"
+      );
+      assert.deepEqual(
+        log.map((e) => e.action),
+        ["volunteer_deleted", "volunteer_updated", "volunteer_updated", "volunteer_created"]
+      );
+      // The role change is spelled out — it lifts the hours cap.
+      const roleChange = log.find((e) => e.details.roleTo);
+      assert.equal(roleChange.details.roleFrom, "volunteer");
+      assert.equal(roleChange.details.roleTo, "officer");
+      assert.equal(roleChange.details.gradeFrom, "9th");
+      assert.equal(roleChange.details.gradeTo, "10th");
+      // Contact details are PII: the log says THAT they changed, never to what.
+      const emailChange = log.find((e) => e.details.email);
+      assert.equal(emailChange.details.email, "changed");
+      assert.equal(
+        JSON.stringify(log).includes("example.com"),
+        false,
+        "no email address is ever written into the audit log"
+      );
+      // The deleted volunteer's name survives — the log outlives the record.
+      assert.equal(log[0].action, "volunteer_deleted");
+      assert.equal(log[0].volunteerName, "Audit Test Person");
+    });
+  });
+
+  test(name("deleting an event leaves its history readable"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, V1);
+      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+
+      await api.send("DELETE", `/api/events/${event.id}`, undefined, auth);
+      assert.equal((await api.get("/api/events", auth)).body.length, 0);
+
+      const log = (await api.get("/api/audit", auth)).body.filter((e) => e.action === "checkin");
+      assert.equal(log.length, 1, "the entry survived the event it referred to");
+      assert.equal(
+        log[0].eventName,
+        "Culture - Beach Cleanup",
+        "…still naming the event, from the snapshot"
+      );
+      assert.equal(log[0].eventDate, "2026-03-15");
+    });
+  });
+
+  test(name("an admin reset does NOT erase the audit log"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, V1);
+      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+      const before = (await api.get("/api/audit", auth)).body.length;
+      assert.ok(before > 0);
+
+      await api.send("POST", "/api/admin/reset", { confirm: "RESET" }, auth);
+      assert.equal(
+        (await api.get("/api/audit", auth)).body.length,
+        before,
+        "a log a reset erases is no record at all"
+      );
+    });
+  });
+
+  test(name("the audit log filters by volunteer, actor and action"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      await api.send("POST", `/api/events/${event.id}/attendance`, { volunteerNames: [V1, V2] }, auth);
+      const code = await codeFor(api, auth, V1);
+      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+      await api.send(
+        "PATCH",
+        `/api/events/${event.id}/attendance/strikes`,
+        { volunteerName: V2, strikes: 1 },
+        officer
+      );
+
+      const byVolunteer = (await api.get(`/api/audit?volunteer=${encodeURIComponent(V1)}`, auth)).body;
+      assert.ok(byVolunteer.length > 0);
+      assert.ok(byVolunteer.every((e) => e.volunteerName === V1));
+
+      const byActor = (await api.get("/api/audit?actor=officer", auth)).body;
+      assert.ok(byActor.length > 0);
+      assert.ok(byActor.every((e) => e.actorRole === "officer"));
+
+      const byAction = (await api.get("/api/audit?action=strike_set", auth)).body;
+      assert.equal(byAction.length, 1);
+      assert.equal(byAction[0].volunteerName, V2);
+
+      // An unknown action filter is IGNORED, not an error — a stale bookmark
+      // degrades to "everything" rather than a broken page.
+      assert.ok((await api.get("/api/audit?action=nonsense", auth)).body.length > 1);
+
+      // limit is honoured and bounded.
+      assert.equal((await api.get("/api/audit?limit=2", auth)).body.length, 2);
+    });
+  });
+
+  test(name("only an admin can read the audit log"), async () => {
+    await withServer(async (api) => {
+      const auth = await adminToken(api);
+      const officer = await officerToken(api);
+      const event = await makeEvent(api, auth);
+      const code = await codeFor(api, auth, V1);
+      await api.send("POST", `/api/events/${event.id}/checkin`, { code }, officer);
+
+      // The officer WROTE these entries and still cannot read them back: the log
+      // names volunteers next to conduct, so it is admin-only without exception.
+      const asOfficer = await api.get("/api/audit", officer);
+      assert.equal(asOfficer.status, 403);
+      assert.equal(asOfficer.body.code, "officer_forbidden");
+      assert.equal((await api.get("/api/audit")).status, 401, "and anonymous callers get nothing");
+      assert.ok((await api.get("/api/audit", auth)).body.length > 0);
+    });
+  });
+
   // ---------------- Events page order ----------------
 
   test(name("the events page order is empty until an admin sets one"), async () => {

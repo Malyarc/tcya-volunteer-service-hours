@@ -10,6 +10,7 @@
 import crypto from "crypto";
 import { neon } from "@neondatabase/serverless";
 import { SCHEMA_STATEMENTS, SEED_LOCK_KEY, normalizeStrikes } from "./schema.js";
+import { normalizeAuditEntry } from "../audit.js";
 import { SEED_VOLUNTEERS } from "../data/seed-volunteers.js";
 import { deriveSubmissionFields, normalizeExpectedHours } from "../hours.js";
 import { ROLE_OFFICER, normalizeRole } from "../roles.js";
@@ -83,6 +84,24 @@ function mapSubmission(r) {
     rawHours: r.raw_hours == null ? hours : Number(r.raw_hours) || 0,
     comments: r.comments || "",
     submittedAt: toIso(r.submitted_at),
+  };
+}
+
+function mapAudit(r) {
+  return {
+    id: r.id,
+    at: toIso(r.at),
+    actorRole: r.actor_role,
+    action: r.action,
+    volunteerName: r.volunteer_name || "",
+    volunteerCode: r.volunteer_code || null,
+    eventId: r.event_id || null,
+    eventName: r.event_name || "",
+    eventDate: r.event_date || "",
+    details:
+      r.details && typeof r.details === "object" && !Array.isArray(r.details)
+        ? r.details
+        : {},
   };
 }
 
@@ -734,6 +753,40 @@ export function createPostgresStore(connectionString) {
 
   // ---------- admin ----------
 
+  // ---------- audit log (append-only; see audit.js) ----------
+
+  async function appendAudit(entry) {
+    await ensureReady();
+    const r = normalizeAuditEntry(entry);
+    await sql`
+      INSERT INTO audit_log
+        (at, actor_role, action, volunteer_name, volunteer_code, event_id, event_name, event_date, details)
+      VALUES
+        (${r.at}::timestamptz, ${r.actorRole}, ${r.action}, ${r.volunteerName},
+         ${r.volunteerCode}, ${r.eventId}::uuid, ${r.eventName}, ${r.eventDate},
+         ${JSON.stringify(r.details)}::jsonb)`;
+    return r;
+  }
+
+  async function listAudit({ volunteerName, action, actorRole, since, limit } = {}) {
+    await ensureReady();
+    const cap = Number.isFinite(Number(limit))
+      ? Math.max(1, Math.min(1000, Number(limit)))
+      : 200;
+    // Every filter is optional and applied in ONE statement: passing null for
+    // an unused filter keeps the query plan (and the parity with the memory
+    // store's predicate chain) identical whichever combination is used.
+    const rows = await sql`
+      SELECT * FROM audit_log
+       WHERE (${volunteerName ?? null}::text IS NULL OR volunteer_name = ${volunteerName ?? null})
+         AND (${action ?? null}::text IS NULL OR action = ${action ?? null})
+         AND (${actorRole ?? null}::text IS NULL OR actor_role = ${actorRole ?? null})
+         AND (${since ?? null}::timestamptz IS NULL OR at >= ${since ?? null}::timestamptz)
+       ORDER BY at DESC, ctid DESC
+       LIMIT ${cap}`;
+    return rows.map(mapAudit);
+  }
+
   async function reset() {
     await ensureReady();
     await sql.transaction([
@@ -742,6 +795,9 @@ export function createPostgresStore(connectionString) {
       sql`DELETE FROM events`,
       // No events ⇒ no groups to order (mirrors the memory store).
       sql`DELETE FROM event_order`,
+      // NOT audit_log: a reset is itself an action worth having a record of,
+      // and a log that a reset erases is no record at all. Mirrored in the
+      // memory store.
     ]);
   }
 
@@ -936,6 +992,8 @@ export function createPostgresStore(connectionString) {
     listSubmissions,
     listEventOrder,
     setEventOrder,
+    appendAudit,
+    listAudit,
     reset,
     ping,
     exportAll,

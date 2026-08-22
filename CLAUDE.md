@@ -115,6 +115,30 @@ Postgres** database.
    name-to-badge and badge-to-badge spacing identical and lets a second badge
    wrap rather than widen the column.
 
+1g. **The audit log is APPEND-ONLY, and never feeds behaviour.** `audit_log`
+   records every action a staff account took ON a volunteer; `server/src/audit.js`
+   owns the vocabulary so the router, both stores and the client cannot drift.
+   Rules that must hold: it is written AFTER a mutation succeeds and `logAudit`
+   swallows its own errors (the change already happened — failing the request
+   would make the user retry and double-apply); entries are derived from the
+   before/after rows, so a PATCH that changed nothing records nothing; the event
+   name/date are SNAPSHOTS so deleting an event cannot erase its history
+   (`event_id` has no FK, deliberately); `reset()` does NOT clear it in either
+   store; and it stores that a contact detail changed, never the value. Reading
+   it is `GET /audit`, **admin-only without exception** — an officer who WROTE
+   an entry still gets a 403, because the log pairs names with conduct. Actor is
+   the ACCOUNT, never a person (shared passcodes) — never present it as an
+   identity. Any new mutating route should append an entry.
+
+1h. **Staff-facing timestamps render in the CHAPTER's timezone**, not the
+   viewer's: `CHAPTER_TZ`/`pacificDayKey`/`formatPacificTime`/`pacificAbbrev` in
+   `client/src/utils.ts`, mirroring `CHAPTER_TZ` in `server/src/hours.js`.
+   Instants are stored absolute and formatted with an explicit `timeZone`, so an
+   admin reading from another timezone sees the clock the officer at the door
+   saw, and PST/PDT resolves itself. Group by `pacificDayKey`, never by the UTC
+   date — a 7:30 PM Pacific entry is 02:30Z the NEXT day and would file under
+   tomorrow. `pacificAbbrev` exists so an August reading is not labelled "PST".
+
 2. **Deleting an event (or removing a volunteer from one) deletes the derived
    submissions** so no orphaned "pending" rows linger in the roster.
    `submissions.event_id` has **no foreign key**; `deleteEvent` deletes the
@@ -182,11 +206,15 @@ npm run build --prefix client   # tsc -b && vite build
   (markers included) and boots a FRESH store, so each one re-runs the real cold
   start: DDL + seed + data migrations. Also holds the Postgres-only migration
   tests (marker guards, archive-before-purge).
-- Client: `client/src/{utils,qr,volunteerExports,badges}.test.ts` — incl. the
+- Client: `client/src/{utils,qr,volunteerExports,badges,audit}.test.ts` — incl. the
   roster==volunteers guard, strike aggregation, event grouping, the saved
   section order (`sortEventGroups` / `moveItem`), `isCollapsibleGroup`, the
-  TC Academy badge list (+ its missing-name check) and the hours mirror, whose
-  cases deliberately duplicate `server/test/hours.test.js`.
+  TC Academy badge list (+ its missing-name check), the hours mirror (whose
+  cases deliberately duplicate `server/test/hours.test.js`), and the audit log's
+  chapter-time rendering + per-action wording.
+
+**When you add a table**, add it to the `TRUNCATE` in `store-parity.test.js` —
+state leaking between parity tests is exactly how the audit log first "failed".
 
 **MANDATORY pre-deploy gate:** the default `npm test` is memory-only. Because the
 production data layer is Postgres, run the parity suite before every deploy.

@@ -1,6 +1,6 @@
 import type { AccountRole } from "../../types";
 
-export type AdminTab = "roster" | "volunteers" | "events";
+export type AdminTab = "roster" | "volunteers" | "events" | "audit";
 
 interface Props {
   active: AdminTab;
@@ -15,7 +15,10 @@ interface Props {
 // The tabs each account may open. Kept as data (rather than a conditional in
 // the markup) so "what can an officer see?" is answerable in one line.
 const TABS_BY_ROLE: Record<AccountRole, AdminTab[]> = {
-  admin: ["roster", "volunteers", "events"],
+  // The audit log names volunteers next to conduct strikes and roster edits, so
+  // it is admin-only — the server enforces that; this just avoids offering an
+  // officer a tab that would 403.
+  admin: ["roster", "volunteers", "events", "audit"],
   officer: ["roster", "events"],
 };
 
@@ -30,7 +33,15 @@ export function ALLOWED_TABS(role: AccountRole): AdminTab[] {
 // volunteer editor, or the events. Sized to be thumb-friendly on a phone/iPad
 // (the tabs fill the width) and tidy on desktop.
 export function AdminTabs({ active, onChange, role, volunteerCount, eventCount }: Props) {
-  const allTabs: Array<{ key: AdminTab; label: string; count?: number; icon: JSX.Element }> = [
+  // `short` is the phone label: with four tabs sharing a 375px bar, "Volunteers"
+  // is the one that does not fit — and a clipped tab is worse than a short one.
+  const allTabs: Array<{
+    key: AdminTab;
+    label: string;
+    short?: string;
+    count?: number;
+    icon: JSX.Element;
+  }> = [
     {
       key: "roster",
       label: "Roster",
@@ -45,6 +56,7 @@ export function AdminTabs({ active, onChange, role, volunteerCount, eventCount }
     {
       key: "volunteers",
       label: "Volunteers",
+      short: "Vols",
       count: volunteerCount,
       icon: (
         <>
@@ -65,13 +77,23 @@ export function AdminTabs({ active, onChange, role, volunteerCount, eventCount }
         </>
       ),
     },
+    {
+      key: "audit",
+      label: "Audit",
+      icon: (
+        <>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 8v4l3 2" />
+        </>
+      ),
+    },
   ];
 
   const allowed = ALLOWED_TABS(role);
   const tabs = allTabs.filter((t) => allowed.includes(t.key));
 
   return (
-    <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 px-4 backdrop-blur sm:px-6">
+    <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 px-2 backdrop-blur sm:px-6">
       <div className="mx-auto flex max-w-6xl gap-1 py-2" role="tablist" aria-label="Sections">
         {tabs.map((t) => {
           const on = active === t.key;
@@ -81,16 +103,23 @@ export function AdminTabs({ active, onChange, role, volunteerCount, eventCount }
               role="tab"
               aria-selected={on}
               onClick={() => onChange(t.key)}
-              className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+              className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl px-1.5 py-2.5 text-[13px] font-semibold transition sm:gap-2 sm:px-3 sm:text-sm ${
                 on
                   ? "bg-brand-600 text-white shadow-sm"
                   : "text-slate-600 hover:bg-slate-100"
               }`}
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4.5 w-4.5 flex-none" style={{ width: 18, height: 18 }}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 flex-none sm:h-[18px] sm:w-[18px]">
                 {t.icon}
               </svg>
-              <span>{t.label}</span>
+              {t.short ? (
+                <>
+                  <span className="sm:hidden">{t.short}</span>
+                  <span className="hidden sm:inline">{t.label}</span>
+                </>
+              ) : (
+                <span>{t.label}</span>
+              )}
               {typeof t.count === "number" && (
                 <span className={`hidden rounded-full px-1.5 py-0.5 text-[11px] font-bold sm:inline ${on ? "bg-white/20 text-white" : "bg-slate-200 text-slate-600"}`}>
                   {t.count}

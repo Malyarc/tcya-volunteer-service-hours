@@ -38,7 +38,8 @@ if (process.env.TEST_NEON_HTTP_PROXY) {
   neonConfig.poolQueryViaFetch = true;
 }
 
-// HARD GUARD: this suite TRUNCATEs all four tables before EVERY test. It must
+// HARD GUARD: this suite TRUNCATEs EVERY table before EVERY test — the list
+// below must be kept in step with schema.js, or state leaks between tests. It must
 // NEVER run against the production database. Refuse unless the target is
 // unmistakably a throwaway: it must differ from DATABASE_URL, and either its
 // connection string carries a throwaway marker (test/throwaway/scratch/…) or the
@@ -98,7 +99,7 @@ if (!URL) {
   // typo in the migration statements.
   async function resetDb() {
     await sql.transaction([
-      sql`TRUNCATE attendance, submissions, events, event_order, volunteers, app_migrations, archived_records RESTART IDENTITY CASCADE`,
+      sql`TRUNCATE attendance, submissions, events, event_order, volunteers, app_migrations, archived_records, audit_log RESTART IDENTITY CASCADE`,
       sql`ALTER SEQUENCE volunteer_code_seq RESTART`,
     ]);
   }

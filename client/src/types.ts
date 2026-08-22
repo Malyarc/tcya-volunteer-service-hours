@@ -34,6 +34,36 @@ export interface Submission {
   submittedAt: string; // ISO timestamp
 }
 
+// One line of the audit log: an action a staff ACCOUNT took on a volunteer.
+// Append-only server-side; the client only ever reads it.
+export type AuditAction =
+  | "checkin"
+  | "checkout"
+  | "checkin_cleared"
+  | "checkout_cleared"
+  | "time_corrected"
+  | "strike_set"
+  | "attendee_added"
+  | "attendee_removed"
+  | "volunteer_created"
+  | "volunteer_updated"
+  | "volunteer_deleted";
+
+export interface AuditEntry {
+  id: string;
+  at: string; // absolute ISO instant; rendered in chapter time
+  // The ACCOUNT, never a person — both passcodes are chapter-shared.
+  actorRole: AccountRole;
+  action: AuditAction;
+  volunteerName: string;
+  volunteerCode: string | null;
+  eventId: string | null;
+  // Snapshots taken when the entry was written, so a deleted event still reads.
+  eventName: string;
+  eventDate: string;
+  details: Record<string, string | number | boolean>;
+}
+
 export interface AttendanceEntry {
   volunteerName: string;
   volunteerId?: string | null;

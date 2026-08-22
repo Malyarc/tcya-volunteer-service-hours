@@ -9,6 +9,7 @@ import { EventsPanel } from "./components/admin/EventsPanel";
 import { CreateEventModal } from "./components/admin/CreateEventModal";
 import { EventDetailPage } from "./components/admin/EventDetailPage";
 import { VolunteersPanel } from "./components/admin/VolunteersPanel";
+import { AuditPanel } from "./components/admin/AuditPanel";
 import { AdminTabs, ALLOWED_TABS, type AdminTab } from "./components/admin/AdminTabs";
 import {
   checkSession,
@@ -65,7 +66,12 @@ export default function App() {
   const [adminTab, setAdminTab] = useState<AdminTab>(() => {
     try {
       const saved = sessionStorage.getItem("ela-tcya-admin-tab");
-      if (saved === "roster" || saved === "volunteers" || saved === "events") {
+      if (
+        saved === "roster" ||
+        saved === "volunteers" ||
+        saved === "events" ||
+        saved === "audit"
+      ) {
         return saved;
       }
     } catch {
@@ -195,6 +201,15 @@ export default function App() {
   }, [adminTab]);
 
   const rosterNames = useMemo(() => roster.map((r) => r.name), [roster]);
+
+  // Volunteer roles by name, for the badges the audit log renders beside a name.
+  // Sourced from the public roster (which carries `role`), so it is available
+  // without the admin volunteers fetch having landed.
+  const rolesByName = useMemo(() => {
+    const m = new Map<string, "volunteer" | "officer">();
+    for (const r of roster) m.set(r.name, r.role === "officer" ? "officer" : "volunteer");
+    return m;
+  }, [roster]);
 
   const summaries = useMemo(
     () => buildSummaries(roster, submissions, events),
@@ -349,6 +364,9 @@ export default function App() {
                   onChanged={handleVolunteersChanged}
                   onToast={setToast}
                 />
+              )}
+              {isAdmin && adminTab === "audit" && (
+                <AuditPanel rolesByName={rolesByName} />
               )}
               {role && adminTab === "events" && (
                 <EventsPanel

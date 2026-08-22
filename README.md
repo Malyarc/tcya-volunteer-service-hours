@@ -41,6 +41,13 @@ Volunteers · Events** so nothing needs scrolling.
     pre-filled draft) — an easy way for staff to send each volunteer their code.
   - Bulk **QR ID Cards (PDF)** — a printable sheet of every volunteer's card —
     and **Export Roster (Excel)** (contact info + QR payload text).
+- **Audit tab** — a chronological log of every action staff have taken on a
+  volunteer: QR check-ins and check-outs, hand-set times and corrections,
+  strikes recorded or cleared, event attendance changes, and roster edits. Each
+  entry shows what changed, when (in the chapter's Pacific time), and which
+  account did it. Filter by action, by account, by date range, or search a
+  volunteer — clicking a name narrows the log to just that person. Admin-only;
+  an officer gets a `403` even for entries they wrote themselves.
 - **Events panel** — create events, manage attendance.
 - **Event Detail** page:
   - **Scan QR** — open the phone camera and scan volunteers' QR codes to
@@ -213,6 +220,7 @@ client/                         React + TS app (Vite)
 server/
   src/
     routes.js                   Shared Express router (used by both deployments)
+    audit.js                    Audit-log vocabulary (actions, normalization)
     db/
       schema.js                 Postgres DDL + seed helpers
       store-postgres.js         Postgres implementation of the Store

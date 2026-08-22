@@ -127,6 +127,45 @@ export const SCHEMA_STATEMENTS = [
      created_at timestamptz NOT NULL DEFAULT now()
    )`,
 
+  // Every action a staff account took ON a volunteer. APPEND-ONLY: rows are
+  // written, never updated and never deleted, because the whole point is to
+  // answer "what happened, and when" after the fact — a log an admin can edit
+  // answers nothing. Nothing in the app reads it to make a decision; it is a
+  // record, not state.
+  //
+  //   at            — the absolute instant, timestamptz. Rendered in the
+  //                   chapter's timezone (Pacific) at DISPLAY time, so an entry
+  //                   never shifts when read from another timezone and the
+  //                   PST/PDT switch is handled by the formatter, not the data.
+  //   actor_role    — 'admin' | 'officer'. The ACCOUNT, not a person: both
+  //                   passcodes are chapter-shared, so this can never identify
+  //                   an individual and must not be presented as if it does.
+  //   event_name /  — SNAPSHOTS taken at write time, for the same reason
+  //   event_date      submissions snapshot them: deleting an event cascades its
+  //                   attendance away, and a log entry that then reads
+  //                   "(unknown event)" has lost the fact worth keeping.
+  //   details       — action-specific before/after payload, free-form JSON.
+  //
+  // `event_id` deliberately has NO foreign key: a cascade would DELETE history
+  // when an event is removed, which is precisely the moment the history matters.
+  `CREATE TABLE IF NOT EXISTS audit_log (
+     id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+     at             timestamptz NOT NULL DEFAULT now(),
+     actor_role     text NOT NULL,
+     action         text NOT NULL,
+     volunteer_name text NOT NULL DEFAULT '',
+     volunteer_code text,
+     event_id       uuid,
+     event_name     text NOT NULL DEFAULT '',
+     event_date     text NOT NULL DEFAULT '',
+     details        jsonb NOT NULL DEFAULT '{}'::jsonb
+   )`,
+
+  // The log is read newest-first, and filtered by volunteer — the two access
+  // paths the Audit tab has.
+  `CREATE INDEX IF NOT EXISTS audit_log_at_idx ON audit_log (at DESC)`,
+  `CREATE INDEX IF NOT EXISTS audit_log_volunteer_idx ON audit_log (volunteer_name)`,
+
   `CREATE INDEX IF NOT EXISTS attendance_event_idx ON attendance (event_id)`,
   `CREATE INDEX IF NOT EXISTS attendance_volunteer_idx ON attendance (volunteer_id)`,
   `CREATE INDEX IF NOT EXISTS submissions_event_idx ON submissions (event_id)`,

@@ -1,8 +1,88 @@
 # Handoff — ELA TCYA Volunteer Service Hours
 
-Single source of truth for the project's current state. Last updated: 2026-08-20.
+Single source of truth for the project's current state. Last updated: 2026-08-21.
 
-## Round 10 (latest) — TC Academy badges + auto-calculated hours
+## Round 11 (latest) — the Audit tab
+
+An admin-only chronological log of every action staff take on a volunteer,
+designed first as a canvas and then built. The chapter's question it answers:
+"who checked this volunteer in, and when?"
+
+### Data
+
+New `audit_log` table, APPEND-ONLY — written, never updated, never deleted.
+`server/src/audit.js` owns the vocabulary (11 actions) so the router, both
+stores and the client cannot drift. Design decisions worth keeping:
+
+- **Written after the mutation succeeds, and `logAudit` swallows its own
+  errors.** The change already happened and was answered; failing the request
+  over a failed log write would tell the user it did not, and they would retry
+  and double-apply. A missing line is the lesser loss.
+- **Entries are derived from the before/after rows, not the request body**, so a
+  PATCH that set a time to the value it already held records nothing, and one
+  PATCH moving both times records both facts. A repeat QR scan (which the store
+  answers `alreadyDone`) records nothing either.
+- **Event name and date are SNAPSHOTS**, and `event_id` has no foreign key on
+  purpose: deleting an event must not erase the history of what happened at it.
+- **`reset()` does NOT clear it** in either store — a log a reset erases is no
+  record at all.
+- **Contact details are never stored**: a roster edit records that the email
+  changed, never the address. The suite asserts no `example.com` reaches the log.
+- **Actor is the ACCOUNT, not a person.** Both passcodes are chapter-shared, so
+  the badge's tooltip says so rather than implying an identity.
+
+### Access
+
+`GET /audit` under `requireAdmin` — **admin-only without exception**. An officer
+who WROTE an entry still gets a 403 reading it back, because the log pairs
+volunteer names with conduct strikes and roster edits. Filters: volunteer,
+actor, action, since, limit (bounded 1–1000).
+
+### Timezone
+
+Everything renders in the chapter's Pacific time regardless of the viewer's
+device clock — `CHAPTER_TZ` / `pacificDayKey` / `formatPacificTime` /
+`pacificAbbrev` in `utils.ts`. Instants are stored absolute and formatted with
+an explicit `timeZone`, so PST/PDT resolves itself. Days are grouped by the
+PACIFIC day: a 7:30 PM Pacific entry is 02:30Z the next day and would otherwise
+file under tomorrow. `pacificAbbrev` means an August reading is labelled PDT
+rather than a false "PST".
+
+### UI
+
+A fourth admin tab. Entries group by day ("Today · Friday, August 21"), each row
+carrying a colour-coded action icon, the volunteer's name with their usual
+badges, what happened, the event, the before/after detail, the Pacific time, and
+the actor badge. Filters for action / actor / date range plus a free-text
+search; **clicking a name narrows the log to that volunteer** and the summary
+line names them — the per-volunteer view without a second page.
+
+Designed first: <https://claude.ai/code/artifact/5c8ccce5-092c-412e-bcb4-c5bdac1d33cb>
+(four artboards — desktop, drill-down, phone, action vocabulary).
+
+### Two bugs found and fixed on the way
+
+- **The parity harness truncated a fixed table list** that did not include
+  `audit_log`, so entries leaked between tests and three parity tests failed
+  with 34 entries where 1 was expected. The list now includes it, and CLAUDE.md
+  says to update it whenever a table is added.
+- **A fourth tab clipped the mobile tab bar.** Four `flex-1` tabs did not fit
+  375px, so "Audit" ran off the edge. Phone labels are now tighter and
+  "Volunteers" shortens to "Vols"; all four measure 87px and none clip.
+
+### Verified
+
+Green bar, exit codes captured: server memory **118 pass** (11 new), live-Postgres
+parity **210 pass**, client **109 pass** (18 new), build clean. **Adversarially
+audited** — 7 mutations (log opened to officers, duplicate scans logged,
+everything attributed to admin, contact values written into the log, a
+correction logged as a fresh check-in, reset wiping the log, the event name not
+snapshotted) each caught. Run live at 1280px and 375px: every action type
+recorded correctly with the right actor and method, filters verified (4 officer
++ 11 admin = 15 total), officer denied the tab AND a direct fetch (403),
+drill-down narrowing to "Showing 4 entries for Ailsa Chen".
+
+## Round 10 — TC Academy badges + auto-calculated hours
 
 ### 1. A second badge: TC Academy
 

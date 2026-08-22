@@ -15,6 +15,7 @@ import {
   OFFICER_USERNAME as BUILT_IN_OFFICER_USERNAME,
 } from "./accounts.js";
 import { MAX_STRIKES } from "./db/schema.js";
+import { AUDIT_ACTIONS, AUDIT_METHODS, isAuditAction } from "./audit.js";
 
 function constantTimeEqual(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
@@ -247,6 +248,88 @@ export function createRouter({
     res.status(401).json({ error: "Admin or officer authentication required" });
   }
 
+  // ---- Audit log ----
+  //
+  // Append one entry for an action that has ALREADY succeeded. It swallows its
+  // own errors on purpose: the mutation is done and answered, so failing the
+  // request over a failed log write would tell the user their change did not
+  // happen — and they would retry it, applying it twice. A missing log line is
+  // the lesser loss, and it is reported to the server log rather than silently.
+  //
+  // The actor is the ACCOUNT (admin | officer), never a person: both passcodes
+  // are chapter-shared, so this cannot identify an individual (see accounts.js).
+  async function logAudit(req, entry) {
+    try {
+      await store.appendAudit({
+        ...entry,
+        actorRole: accountRole(req) === ACCOUNT_OFFICER ? "officer" : "admin",
+      });
+    } catch (err) {
+      console.error("Failed to write an audit entry:", err?.message || err);
+    }
+  }
+
+  // The event fields every entry snapshots, so a log line still reads after the
+  // event it refers to has been deleted.
+  function eventStamp(event) {
+    if (!event) return { eventId: null, eventName: "", eventDate: "" };
+    return {
+      eventId: event.id,
+      eventName: event.customName || event.name || "",
+      eventDate: event.date || "",
+    };
+  }
+
+  // Everything that changed on ONE attendance row, as audit entries. Derived by
+  // comparing the row before and after the write rather than from the request
+  // body, so an edit that turned out to be a no-op logs nothing, and a single
+  // PATCH that moves both times logs both facts.
+  function attendanceDiff(before, after, event, method) {
+    const out = [];
+    const stamp = eventStamp(event);
+    const base = {
+      ...stamp,
+      volunteerName: after?.volunteerName || before?.volunteerName || "",
+      volunteerCode: after?.code || before?.code || null,
+    };
+    const pairs = [
+      ["checkinAt", AUDIT_ACTIONS.CHECKIN, AUDIT_ACTIONS.CHECKIN_CLEARED, "checkin"],
+      ["checkoutAt", AUDIT_ACTIONS.CHECKOUT, AUDIT_ACTIONS.CHECKOUT_CLEARED, "checkout"],
+    ];
+    for (const [field, setAction, clearAction, side] of pairs) {
+      const from = before?.[field] ?? null;
+      const to = after?.[field] ?? null;
+      if (from === to) continue;
+      if (to && !from) {
+        out.push({ ...base, action: setAction, details: { side, method, to } });
+      } else if (!to && from) {
+        out.push({ ...base, action: clearAction, details: { side, from } });
+      } else {
+        // Both sides set and different — a correction, which is the one case
+        // where the PREVIOUS value is the interesting half.
+        out.push({
+          ...base,
+          action: AUDIT_ACTIONS.TIME_CORRECTED,
+          details: { side, from, to },
+        });
+      }
+    }
+    const sFrom = before?.strikes ?? 0;
+    const sTo = after?.strikes ?? 0;
+    if (sFrom !== sTo) {
+      out.push({
+        ...base,
+        action: AUDIT_ACTIONS.STRIKE_SET,
+        details: { from: sFrom, to: sTo },
+      });
+    }
+    return out;
+  }
+
+  function findAttendance(event, volunteerName) {
+    return (event?.attendance || []).find((a) => a.volunteerName === volunteerName) || null;
+  }
+
   // ---- Login throttle: cap failed attempts per client IP. In-memory (per
   // instance), so it's best-effort on serverless, but it meaningfully slows a
   // brute force of the single shared password. ----
@@ -418,6 +501,12 @@ export function createRouter({
         role: normalizeRole(body.role),
         customFields: sanitizeCustomFields(body.customFields),
       });
+      await logAudit(req, {
+        action: AUDIT_ACTIONS.VOLUNTEER_CREATED,
+        volunteerName: volunteer.name,
+        volunteerCode: volunteer.code || null,
+        details: { grade: volunteer.grade || "", role: volunteer.role },
+      });
       res.status(201).json(volunteer);
     } catch (err) {
       console.error("Failed to create volunteer", err);
@@ -451,9 +540,43 @@ export function createRouter({
       patch.customFields = sanitizeCustomFields(body.customFields);
 
     try {
+      const before = await store.getVolunteer(req.params.id);
       const volunteer = await store.updateVolunteer(req.params.id, patch);
       if (!volunteer)
         return res.status(404).json({ error: "Volunteer not found" });
+      // Name the fields that actually MOVED. A rename and a role change are the
+      // two that alter what the rest of the app computes (attendance is keyed
+      // by name; role lifts the hours cap), so both carry their before/after.
+      const changed = {};
+      if (before) {
+        if (before.name !== volunteer.name) {
+          changed.nameFrom = before.name;
+          changed.nameTo = volunteer.name;
+        }
+        if (before.role !== volunteer.role) {
+          changed.roleFrom = before.role;
+          changed.roleTo = volunteer.role;
+        }
+        if (before.grade !== volunteer.grade) {
+          changed.gradeFrom = before.grade || "—";
+          changed.gradeTo = volunteer.grade || "—";
+        }
+        for (const f of ["email", "phone"]) {
+          // Contact details are PII; record THAT they changed, never the values.
+          if (before[f] !== volunteer[f]) changed[f] = "changed";
+        }
+        if (JSON.stringify(before.customFields) !== JSON.stringify(volunteer.customFields)) {
+          changed.customFields = "changed";
+        }
+      }
+      if (Object.keys(changed).length > 0) {
+        await logAudit(req, {
+          action: AUDIT_ACTIONS.VOLUNTEER_UPDATED,
+          volunteerName: volunteer.name,
+          volunteerCode: volunteer.code || null,
+          details: changed,
+        });
+      }
       res.json(volunteer);
     } catch (err) {
       if (err && err.code === "name_conflict") {
@@ -466,8 +589,17 @@ export function createRouter({
 
   router.delete("/volunteers/:id", requireAdmin, async (req, res) => {
     try {
+      // Read the record BEFORE deleting it — afterwards there is no name left
+      // to write into the log, which is exactly when the log matters most.
+      const before = await store.getVolunteer(req.params.id);
       const ok = await store.deleteVolunteer(req.params.id);
       if (!ok) return res.status(404).json({ error: "Volunteer not found" });
+      await logAudit(req, {
+        action: AUDIT_ACTIONS.VOLUNTEER_DELETED,
+        volunteerName: before?.name || "",
+        volunteerCode: before?.code || null,
+        details: { grade: before?.grade || "", role: before?.role || "" },
+      });
       res.json({ ok: true });
     } catch (err) {
       console.error("Failed to delete volunteer", err);
@@ -631,8 +763,21 @@ export function createRouter({
       return res.status(400).json({ error: "volunteerNames must be an array" });
     }
     try {
+      const before = await store.getEvent(req.params.id);
+      const had = new Set((before?.attendance || []).map((a) => a.volunteerName));
       const event = await store.addAttendees(req.params.id, volunteerNames);
       if (!event) return res.status(404).json({ error: "Event not found" });
+      // Only the names actually ADDED — re-adding someone already on the list
+      // is a no-op and must not read as an action in the log.
+      for (const a of event.attendance) {
+        if (had.has(a.volunteerName)) continue;
+        await logAudit(req, {
+          ...eventStamp(event),
+          action: AUDIT_ACTIONS.ATTENDEE_ADDED,
+          volunteerName: a.volunteerName,
+          volunteerCode: a.code || null,
+        });
+      }
       res.json(event);
     } catch (err) {
       console.error("Failed to add attendees", err);
@@ -674,12 +819,23 @@ export function createRouter({
     }
 
     try {
+      const before = findAttendance(await store.getEvent(req.params.id), volunteerName);
       const event = await store.patchAttendance(
         req.params.id,
         volunteerName,
         patch
       );
       if (!event) return res.status(404).json({ error: "Event not found" });
+      // Derived from the before/after rows, not the request body: a PATCH that
+      // set a time to the value it already had records nothing.
+      for (const entry of attendanceDiff(
+        before,
+        findAttendance(event, volunteerName),
+        event,
+        AUDIT_METHODS.MANUAL
+      )) {
+        await logAudit(req, entry);
+      }
       res.json(event);
     } catch (err) {
       console.error("Failed to update attendance", err);
@@ -693,8 +849,23 @@ export function createRouter({
       return res.status(400).json({ error: "volunteerName is required" });
     }
     try {
+      const before = findAttendance(await store.getEvent(req.params.id), volunteerName);
       const event = await store.removeAttendance(req.params.id, volunteerName);
       if (!event) return res.status(404).json({ error: "Event not found" });
+      if (before) {
+        await logAudit(req, {
+          ...eventStamp(event),
+          action: AUDIT_ACTIONS.ATTENDEE_REMOVED,
+          volunteerName,
+          volunteerCode: before.code || null,
+          // Removal deletes the derived submission too, so say what was lost.
+          details: {
+            checkinAt: before.checkinAt ?? null,
+            checkoutAt: before.checkoutAt ?? null,
+            strikes: before.strikes ?? 0,
+          },
+        });
+      }
       res.json(event);
     } catch (err) {
       console.error("Failed to remove attendee", err);
@@ -726,6 +897,7 @@ export function createRouter({
         .json({ error: `strikes must be a whole number between 0 and ${MAX_STRIKES}` });
     }
     try {
+      const before = findAttendance(await store.getEvent(req.params.id), volunteerName);
       const event = await store.patchAttendance(req.params.id, volunteerName, {
         strikes,
       });
@@ -739,6 +911,9 @@ export function createRouter({
             ? "That volunteer is not on this event's attendance list."
             : "Event not found",
         });
+      }
+      for (const entry of attendanceDiff(before, findAttendance(event, volunteerName), event)) {
+        await logAudit(req, entry);
       }
       // Officers read the event back through their own projection, so recording
       // a strike can't hand back the QR codes GET /events withheld.
@@ -769,6 +944,25 @@ export function createRouter({
       // can't hand back the contact details or the whole event's QR codes that
       // GET /events deliberately withheld.
       const asAdmin = isAdminRequest(req);
+      // A repeat scan changes nothing (the store answers alreadyDone and leaves
+      // the original time alone), so it is not an action to record — logging it
+      // would fill the log with duplicates that never moved a time.
+      if (!result.alreadyDone) {
+        await logAudit(req, {
+          ...eventStamp(result.event),
+          action: kind === "checkin" ? AUDIT_ACTIONS.CHECKIN : AUDIT_ACTIONS.CHECKOUT,
+          volunteerName: result.attendance?.volunteerName || result.volunteer?.name || "",
+          volunteerCode: result.volunteer?.code || null,
+          details: {
+            side: kind,
+            method: AUDIT_METHODS.SCAN,
+            to:
+              kind === "checkin"
+                ? result.attendance?.checkinAt ?? null
+                : result.attendance?.checkoutAt ?? null,
+          },
+        });
+      }
       res.json({
         ok: true,
         volunteer: asAdmin ? result.volunteer : officerVolunteer(result.volunteer),
@@ -788,6 +982,38 @@ export function createRouter({
   router.post("/events/:id/checkout", requireScanner, (req, res) =>
     handleScan(req, res, "checkout")
   );
+
+  // ---------- Audit log (admin only) ----------
+  //
+  // Admin-only without exception. The log names volunteers alongside conduct
+  // strikes and roster edits, so it is strictly more sensitive than any public
+  // projection — there is no officer or anonymous view of it, and officers get
+  // the usual 403 rather than a filtered copy.
+  router.get("/audit", requireAdmin, async (req, res) => {
+    const q = req.query || {};
+    const volunteerName = trimStr(q.volunteer, 200) || undefined;
+    const actorRole =
+      q.actor === "admin" || q.actor === "officer" ? q.actor : undefined;
+    const action = isAuditAction(q.action) ? String(q.action) : undefined;
+    // `since` is an ISO instant; anything unparseable is ignored rather than
+    // rejected, so a stale bookmark degrades to "everything" instead of a 400.
+    const since = normalizeIsoOrNull(q.since) || undefined;
+    const limitRaw = Number(q.limit);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : undefined;
+    try {
+      const entries = await store.listAudit({
+        volunteerName,
+        actorRole,
+        action,
+        since,
+        limit,
+      });
+      res.json(entries);
+    } catch (err) {
+      console.error("Failed to read the audit log", err);
+      res.status(500).json({ error: "Failed to read the audit log" });
+    }
+  });
 
   // ---------- Event order (the Events page section order) ----------
   //

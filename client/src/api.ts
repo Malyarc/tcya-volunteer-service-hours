@@ -1,5 +1,6 @@
 import type {
   AccountRole,
+  AuditEntry,
   Submission,
   VolunteerEvent,
   NewEvent,
@@ -258,6 +259,32 @@ export async function removeAttendee(
     body: JSON.stringify({ volunteerName }),
   });
   return handle<VolunteerEvent>(res);
+}
+
+// ---------- Audit log (admin only) ----------
+
+// Read the activity log. Every filter is optional; the server ignores an
+// unrecognized action rather than erroring, so a stale filter degrades to
+// "everything" instead of a broken page.
+export async function fetchAudit(params: {
+  volunteer?: string;
+  actor?: AccountRole;
+  action?: string;
+  since?: string;
+  limit?: number;
+} = {}): Promise<AuditEntry[]> {
+  const qs = new URLSearchParams();
+  if (params.volunteer) qs.set("volunteer", params.volunteer);
+  if (params.actor) qs.set("actor", params.actor);
+  if (params.action) qs.set("action", params.action);
+  if (params.since) qs.set("since", params.since);
+  if (params.limit) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs}` : "";
+  const res = await fetch(`${API_BASE}/audit${suffix}`, {
+    cache: "no-store",
+    headers: headers(),
+  });
+  return handle<AuditEntry[]>(res);
 }
 
 // ---------- Events page order (one entry per event-type section) ----------

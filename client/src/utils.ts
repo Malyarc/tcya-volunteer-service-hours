@@ -97,6 +97,81 @@ export function localInputToIso(val: string): string | null {
   return d.toISOString();
 }
 
+// ---------- The chapter's timezone ----------
+//
+// Everything staff-facing is shown in the chapter's own timezone, NOT the
+// viewer's: an admin checking the log from a trip must read the same clock time
+// the officer at the door saw. Timestamps are stored as absolute instants, so
+// this is purely a display choice — and using a named zone rather than a fixed
+// offset is what makes the PST/PDT switch handle itself.
+export const CHAPTER_TZ = "America/Los_Angeles";
+
+// The Pacific calendar day an instant falls on, as YYYY-MM-DD. 'en-CA' is the
+// locale that formats exactly that way, and it sorts lexically — so it doubles
+// as the grouping key for "everything that happened on one day".
+export function pacificDayKey(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: CHAPTER_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+export function pacificTodayKey(now: Date = new Date()): string {
+  return pacificDayKey(now.toISOString());
+}
+
+// "3:45 PM" in chapter time.
+export function formatPacificTime(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: CHAPTER_TZ,
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(d);
+}
+
+// Whether an instant falls in Pacific Daylight or Pacific Standard Time, so the
+// UI can label a timestamp truthfully instead of calling an August reading
+// "PST". Both are "Pacific"; the abbreviation is the honest detail.
+export function pacificAbbrev(iso?: string | null): "PDT" | "PST" {
+  const d = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(d.getTime())) return "PT" as never;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: CHAPTER_TZ,
+    timeZoneName: "short",
+  }).formatToParts(d);
+  const name = parts.find((p) => p.type === "timeZoneName")?.value || "";
+  return name === "PST" ? "PST" : "PDT";
+}
+
+// "Today" / "Yesterday" / "Thursday, August 21" for a YYYY-MM-DD day key.
+// Relative to the PACIFIC day, not the viewer's — otherwise an admin in another
+// timezone sees an entry filed under "Yesterday" that the chapter calls today.
+export function formatPacificDayLabel(
+  dayKey: string,
+  todayKey: string = pacificTodayKey()
+): string {
+  if (!dayKey) return "";
+  if (dayKey === todayKey) return "Today";
+  const [y, m, d] = dayKey.split("-").map(Number);
+  if (!y || !m || !d) return dayKey;
+  const [ty, tm, td] = todayKey.split("-").map(Number);
+  const dayDate = Date.UTC(y, m - 1, d);
+  const todayDate = Date.UTC(ty, tm - 1, td);
+  if (todayDate - dayDate === 86400000) return "Yesterday";
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+}
+
 // ---------- Derived hours, mirrored from the server ----------
 //
 // The SERVER owns hours: `server/src/hours.js` derives them from the check-in /

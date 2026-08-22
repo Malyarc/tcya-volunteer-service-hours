@@ -8,6 +8,7 @@
 
 import crypto from "crypto";
 import { formatVolunteerCode, normalizeStrikes } from "./schema.js";
+import { normalizeAuditEntry } from "../audit.js";
 import { SEED_VOLUNTEERS } from "../data/seed-volunteers.js";
 import { deriveSubmissionFields, normalizeExpectedHours } from "../hours.js";
 import { ROLE_OFFICER, ROLE_VOLUNTEER, normalizeRole } from "../roles.js";
@@ -30,6 +31,8 @@ export function createMemoryStore(seed) {
   // listEventOrder / setEventOrder.
   let eventOrder = [];
   let archivedRecords = [];
+  // Append-only audit entries, oldest first (insertion order). See audit.js.
+  let auditLog = [];
   const appliedMigrations = new Set();
   let codeSeq = 0;
   let insertSeq = 0;
@@ -629,6 +632,34 @@ export function createMemoryStore(seed) {
     return listEventOrder();
   }
 
+  // ---------- audit log (append-only; see audit.js) ----------
+
+  async function appendAudit(entry) {
+    const row = normalizeAuditEntry(entry);
+    // A monotonic id keeps the newest-first ordering stable when several
+    // entries share a millisecond — the Postgres store gets the same guarantee
+    // from its own insertion order.
+    insertSeq += 1;
+    auditLog.push({ id: crypto.randomUUID(), seq: insertSeq, ...row });
+    return row;
+  }
+
+  async function listAudit({ volunteerName, action, actorRole, since, limit } = {}) {
+    const cap = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(1000, Number(limit))) : 200;
+    const sinceMs = since ? Date.parse(since) : NaN;
+    const rows = auditLog
+      .filter((r) => {
+        if (volunteerName && r.volunteerName !== volunteerName) return false;
+        if (action && r.action !== action) return false;
+        if (actorRole && r.actorRole !== actorRole) return false;
+        if (!Number.isNaN(sinceMs) && Date.parse(r.at) < sinceMs) return false;
+        return true;
+      })
+      // Newest first; `seq` breaks a same-instant tie in insertion order.
+      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : b.seq - a.seq));
+    return rows.slice(0, cap).map(({ seq, ...r }) => ({ ...r }));
+  }
+
   // ---------- admin ----------
 
   async function reset() {
@@ -840,6 +871,8 @@ export function createMemoryStore(seed) {
     listSubmissions,
     listEventOrder,
     setEventOrder,
+    appendAudit,
+    listAudit,
     reset,
     exportAll,
     importAll,
